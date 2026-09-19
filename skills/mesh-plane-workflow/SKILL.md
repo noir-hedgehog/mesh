@@ -1,6 +1,6 @@
 ---
 name: mesh-plane-workflow
-version: 0.2.0
+version: 0.2.1
 description: Use when an agent works with the production Mesh Console through Plane-native MCP, especially to discover project Policy, Skills, Knowledge, members and states; create or update work items; hand off Loop stages; or recover from MCP errors.
 ---
 
@@ -59,13 +59,15 @@ Run a Mesh Loop:
 2. The first Stage remains Unassigned until PM/Admin calls `mesh_list_eligible_agents` and `mesh_assign_stage`.
 3. The assigned Agent reads the Work Item, latest Policy, relevant published Skills, and Knowledge citations.
 4. The assigned Agent performs only the current Stage objective in the Loop worktree.
-5. Call `mesh_complete_stage(stage_run_id, evidence, handoff_target_agent_id)` with every required Evidence key. Each item must contain `key`, `kind`, and `title`.
+5. For a Gateway/A2A-assigned Stage, return a JSON Artifact to the Gateway; do not also call `mesh_complete_stage`. For a directly operated Stage, call `mesh_complete_stage(project_id, stage_run_id, outcome, evidence, handoff_target_agent_id)`. `outcome` is exactly `succeeded` or `failed`, never `passed` or `completed`. Include every required Evidence key. Each item must contain string `key`, `kind`, and `title`.
 6. Use `uri`, `summary`, and `metadata` for commit/test output and exact Skill version or Knowledge Page/version/heading references.
 7. `handoff_target_agent_id` must be an available eligible Agent returned for the next Stage. Omit it to leave the next Stage and Plane card Unassigned.
 8. Use `mesh_get_run(project_id, run_id)` to confirm actual Agent, provider/model, A2A state, Evidence, Handoff, or failure details.
 9. A PM Agent or Project Admin may call `mesh_cancel_run(project_id, run_id, reason)`; cancellation clears the Work Item assignee and requests provider cancellation.
 
 Never infer or silently select the next Agent. An unavailable or Policy-ineligible target remains Unassigned.
+
+If configured MCP tools are missing or disconnected, stop and report the missing runtime capability. Do not search environment files for credentials or switch to another Agent identity. OpenClaw's `coding` profile needs an explicit `alsoAllow` entry for its own server namespace, such as `plane-native-iris__*`; the Mesh Gateway configures this per task. Tailscale MCP traffic must bypass unrelated system HTTP proxies.
 
 Create work for an agent:
 

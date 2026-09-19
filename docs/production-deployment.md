@@ -72,6 +72,17 @@ The bootstrap marks every configured Agent Card unavailable before synchronizing
 
 Gateway state is stored in `~/.mesh/mesh-agent-gateway.sqlite3`, with a separate persistent idempotency database and per-Loop worktrees under `~/.mesh/worktrees`. Back up these files locally with restricted permissions; do not copy the bearer token into Mesh data or backups intended for sharing.
 
+Run `scripts/backup_mesh_agent_gateway.sh` for consistent SQLite backups with
+integrity checks and checksums under `~/.mesh/backups/`. It deliberately excludes
+environment files and tokens. Keep worktrees separately until their changes have
+been reviewed and merged. Gateway installation and credential provisioning are
+required when restoring on a new host.
+
+Gateway tasks use a private per-task OpenClaw configuration, their own MCP
+namespace, and a per-Loop worktree. Completion is a strict JSON file at the
+Artifact path supplied by the Gateway, with `outcome: succeeded | failed` and
+every required Evidence key. A chat reply does not substitute for this Artifact.
+
 ## Exposure policy
 
 ### Console builds on small hosts

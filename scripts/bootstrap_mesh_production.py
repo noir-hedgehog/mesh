@@ -237,6 +237,9 @@ def main() -> None:
     projects = Project.objects.filter(deleted_at__isnull=True).select_related("workspace", "workspace__owner")
     if workspace_slug:
         projects = projects.filter(workspace__slug=workspace_slug)
+    project_id = os.environ.get("MESH_BOOTSTRAP_PROJECT_ID", "").strip()
+    if project_id:
+        projects = projects.filter(id=project_id)
     results = [_bootstrap_project(project, source_text) for project in projects.order_by("workspace__slug", "name")]
     print(json.dumps({"projects": results}, ensure_ascii=False, indent=2))
 

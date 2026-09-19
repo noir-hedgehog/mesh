@@ -98,6 +98,7 @@ chmod 600 "$ENV_FILE" "$RUNTIME_ENV"
 {
   printf '#!/usr/bin/env bash\n'
   printf 'set -euo pipefail\n'
+  printf 'umask 077\n'
   printf 'source %q\n' "$RUNTIME_ENV"
   printf 'cd %q\n' "$INSTALL_DIR"
   printf 'exec %q -m services.mesh_agent_gateway.app\n' "$VENV/bin/python"

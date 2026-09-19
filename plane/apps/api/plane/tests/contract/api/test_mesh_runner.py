@@ -81,6 +81,28 @@ def test_provider_failure_returns_unassigned_then_exhausts_budget(running_stage)
         assert _record_terminal_failure(str(retry.id), "failed", "test")["status"] == "failed"
 
 
+@pytest.mark.parametrize("target", [None, "unavailable-agent"])
+def test_missing_or_unavailable_handoff_waits_without_changing_business_state(running_stage, target):
+    data, stage, attempt = running_stage
+    definition = stage.loop_run.definition
+    definition.graph = {
+        "nodes": [{"id": "dev", "type": "stage"}, {"id": "test", "type": "stage", "roles": ["tester"]}],
+        "edges": [{"from": "dev", "to": "test"}],
+    }
+    definition.save()
+    result = _record_completion(str(attempt.id), {
+        "outcome": "succeeded", "handoff_target_agent_id": target,
+        "evidence": [{"key": "summary", "kind": "text", "title": "Done"}],
+    }, "TASK_STATE_COMPLETED")
+    assert result["status"] == "waiting_for_assignee"
+    following = MeshStageRun.objects.get(loop_run=stage.loop_run, node_id="test")
+    assert following.assigned_agent_id is None
+    assert following.status == "waiting_for_assignee"
+    assert not IssueAssignee.objects.filter(issue=data["issue"]).exists()
+    data["issue"].refresh_from_db()
+    assert data["issue"].state_id == data["states"]["todo"].id
+
+
 @pytest.mark.parametrize("evidence", [
     [{"key": 42, "kind": "text", "title": "bad"}],
     [{"key": "summary", "kind": "text", "title": "bad", "extra": True}],

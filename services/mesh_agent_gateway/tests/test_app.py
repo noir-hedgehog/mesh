@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from starlette.testclient import TestClient
 from google.protobuf.struct_pb2 import Struct
 
-from services.mesh_agent_gateway.app import OpenClawExecutor, _worktree, create_app, execution_environment, plain_metadata, redact
+from services.mesh_agent_gateway.app import OpenClawExecutor, _completion_payload, _worktree, create_app, execution_environment, plain_metadata, redact
 
 
 def test_nested_a2a_metadata_is_json_serializable():
@@ -59,10 +59,15 @@ def test_embedded_runtime_scopes_mcp_and_workspace(tmp_path, monkeypatch):
         assert "MESH_GATEWAY_TOKEN" not in kwargs["env"]
         assert kwargs["start_new_session"] is True
         assert "--local" in args
+        completion = Path(kwargs["env"]["OPENCLAW_CONFIG_PATH"]).with_name("completion.json")
+        assert str(completion) in args[args.index("--message") + 1]
+        completion.write_text('{"outcome":"succeeded","evidence":[]}')
         return Process()
 
     with patch("services.mesh_agent_gateway.app.asyncio.create_subprocess_exec", spawn):
-        asyncio.run(OpenClawExecutor("iris")._run_openclaw(context, tmp_path))
+        result = asyncio.run(OpenClawExecutor("iris")._run_openclaw(context, tmp_path))
+        assert result["mesh_completion"]["outcome"] == "succeeded"
+        assert _completion_payload(result, "Some prose", agent_id="iris", branch=None)["outcome"] == "succeeded"
     assert "workspace" not in json.loads(source.read_text())["agents"]["list"][0]
 
 

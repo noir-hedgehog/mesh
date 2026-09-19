@@ -126,10 +126,10 @@ def _completion_payload(result: dict[str, Any], text: str, *, agent_id: str, bra
     runtime = result.get("result", result)
     meta = runtime.get("meta", {})
     agent_meta = meta.get("agentMeta", {})
-    reported = _extract_json(text)
+    reported = result.get("mesh_completion") or _extract_json(text)
+    if not isinstance(reported, dict) or reported.get("outcome") not in {"succeeded", "failed"}:
+        raise ValueError("Completion Artifact must contain outcome: succeeded or failed")
     evidence = reported.get("evidence") if isinstance(reported.get("evidence"), list) else []
-    if not evidence:
-        evidence = [{"key": "summary", "kind": "text", "title": "Agent summary", "summary": text[:4000]}]
     usage = agent_meta.get("usage") or runtime.get("usage") or {}
     return {
         "schema_version": 1,
@@ -248,8 +248,12 @@ class OpenClawExecutor(AgentExecutor):
             "include their actual version and Page/heading references in Evidence. "
             "Return the completion Artifact here; the Runner advances the Stage, so do not call mesh_complete_stage yourself.\n"
             f"Required evidence keys: {json.dumps(required, ensure_ascii=False)}\n"
-            "Return one JSON object with outcome, evidence, and optional handoff_target_agent_id. "
-            "Each evidence item must contain key, kind, and title; summary, uri, and metadata are optional."
+            "Return ONLY one JSON object with outcome, evidence, and optional handoff_target_agent_id. "
+            "outcome is a strict enum: succeeded or failed. Do not use passed, completed, success, or prose. "
+            "Each evidence item must contain string key, kind, and title; summary, uri, and metadata are optional. "
+            "Every required evidence key must be present. For handoff, query eligible Agents and explicitly choose a short Agent id. "
+            'Example shape: {"outcome":"succeeded","evidence":[{"key":"summary","kind":"text","title":"Result","summary":"..."}],"handoff_target_agent_id":"lingxi"}. '
+            "Use the actual required evidence keys and eligible next Agent for your Stage, not the example values."
         )
         session_key = f"agent:{self.agent_id}:mesh:{context.task_id}"
         command = [
@@ -283,6 +287,12 @@ class OpenClawExecutor(AgentExecutor):
         }
         with tempfile.TemporaryDirectory(prefix="mesh-run-config-") as directory:
             config_path = Path(directory) / "openclaw.json"
+            completion_path = Path(directory) / "completion.json"
+            command[command.index("--message") + 1] += (
+                f"\nWrite the final strict JSON object to this exact Artifact file: {completion_path}. "
+                "Use the write tool. Do not wrap the file in Markdown or prose. The Gateway reads this file, "
+                "so a brief final chat response is fine only after the file exists. Do not commit the Artifact file."
+            )
             config_path.write_text(json.dumps(config))
             config_path.chmod(0o600)
             process = await asyncio.create_subprocess_exec(
@@ -306,10 +316,14 @@ class OpenClawExecutor(AgentExecutor):
                 raise
             finally:
                 self._processes.pop(context.task_id or session_key, None)
+            completion = json.loads(completion_path.read_text()) if completion_path.exists() else None
         if process.returncode:
             raise RuntimeError(f"OpenClaw exited with status {process.returncode}: {redact(stderr.decode())}")
         try:
-            return json.loads(stdout.decode())
+            result = json.loads(stdout.decode())
+            if completion is not None:
+                result["mesh_completion"] = completion
+            return result
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"OpenClaw returned invalid JSON: {redact(stdout.decode())}") from exc
 
@@ -456,6 +470,7 @@ app = create_app()
 def main() -> None:
     import uvicorn
 
+    os.umask(0o077)
     uvicorn.run(
         "services.mesh_agent_gateway.app:app",
         host=os.environ.get("MESH_GATEWAY_HOST", "127.0.0.1"),
