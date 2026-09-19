@@ -600,6 +600,8 @@ class WorkspaceAgentDetailEndpoint(BaseAPIView):
             if profile:
                 for field in ("agent_type", "runtime_provider", "endpoint_url", "status", "trust_level"):
                     if field in request.data:
+                        if field == "endpoint_url" and profile.endpoint_url != request.data.get(field):
+                            profile.agent_card = {"available": False, "sync_pending": True}
                         setattr(profile, field, str(request.data.get(field) or ""))
                 if "capability_claims" in request.data:
                     profile.capability_claims = list(request.data.get("capability_claims") or [])

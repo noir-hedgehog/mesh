@@ -74,6 +74,16 @@ Gateway state is stored in `~/.mesh/mesh-agent-gateway.sqlite3`, with a separate
 
 ## Exposure policy
 
+### Console builds on small hosts
+
+Build the Console with `pnpm turbo run build --filter=web` from `plane/` on a
+development machine. Transfer `plane/apps/web/build/client/` with the exact source
+commit to the release's `plane/apps/web/` directory, then build the serving image
+using `docker build -f Dockerfile.prebuilt -t plane-web .` in that directory.
+This keeps the frontend compiler off the production host. Record the source commit
+and artifact checksum in the release directory. Keep the preceding API and Web
+images tagged by release before replacing the running containers.
+
 - Plane HTTP/HTTPS binds to `LISTEN_HOST`; production uses the Tailscale IP.
 - Plane API, MinIO console, MinIO API, and AgentPM's direct port bind to loopback only.
 - Do not expose ports 8000, 8081, 9000, or 9090 through a cloud security group.

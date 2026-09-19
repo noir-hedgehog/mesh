@@ -124,7 +124,7 @@ def test_worktree_recovers_an_existing_run_branch(tmp_path, monkeypatch):
     monkeypatch.setenv("MESH_GATEWAY_WORKTREE_ROOT", str(tmp_path / "worktrees"))
     monkeypatch.setenv("MESH_GATEWAY_GIT_BASE_REF", "main")
 
-    metadata = {"project_id": "project-1", "mesh_run_id": "1234567890abcdef"}
+    metadata = {"project_id": "project-1", "mesh_run_id": "12345678-1234-1234-1234-123456789abc"}
     first, branch = _worktree(metadata)
     subprocess.run(["git", "-C", str(repository), "worktree", "remove", "--force", str(first)], check=True)
     recovered, recovered_branch = _worktree(metadata)

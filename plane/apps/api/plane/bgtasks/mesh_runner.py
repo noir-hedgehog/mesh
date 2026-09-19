@@ -110,7 +110,7 @@ def start_mesh_stage(self, stage_run_id: str):
         return {"status": "missing", "stage_run_id": stage_run_id}
 
     if attempt is None:
-        return {"status": "waiting_for_assignee", "stage_run_id": stage_run_id}
+        return {"status": stage.status, "stage_run_id": stage_run_id}
     if attempt.provider_run_id:
         poll_mesh_agent_task.apply_async(args=[str(attempt.id)], countdown=_poll_delay(0))
         return {"status": "running", "attempt_id": str(attempt.id), "provider_run_id": attempt.provider_run_id}
@@ -132,17 +132,16 @@ def start_mesh_stage(self, stage_run_id: str):
     attempt.status = MeshRunAttempt.Status.RUNNING
     attempt.started_at = attempt.started_at or timezone.now()
     attempt.heartbeat_at = timezone.now()
-    attempt.save(
-        update_fields=[
-            "provider_run_id",
-            "provider_session_id",
-            "provider_state",
-            "status",
-            "started_at",
-            "heartbeat_at",
-            "updated_at",
-        ]
+    updated = MeshRunAttempt.objects.filter(
+        id=attempt.id, status__in=[MeshRunAttempt.Status.QUEUED, MeshRunAttempt.Status.RUNNING],
+    ).update(
+        provider_run_id=attempt.provider_run_id, provider_session_id=attempt.provider_session_id,
+        provider_state=attempt.provider_state, status=attempt.status,
+        started_at=attempt.started_at, heartbeat_at=attempt.heartbeat_at,
     )
+    if not updated:
+        _cancel_agent_task(attempt)
+        return {"status": "canceled", "attempt_id": str(attempt.id)}
     poll_mesh_agent_task.apply_async(args=[str(attempt.id)], countdown=_poll_delay(0))
     return {"status": "running", "attempt_id": str(attempt.id), "provider_run_id": attempt.provider_run_id}
 
@@ -204,10 +203,14 @@ def poll_mesh_agent_task(self, attempt_id: str):
 @transaction.atomic
 def _prepare_attempt(stage_run_id: str):
     stage = (
-        MeshStageRun.objects.select_for_update()
+        MeshStageRun.objects.select_for_update(of=("self",))
         .select_related("assigned_agent__user", "loop_run__work_item", "functional_role")
         .get(id=stage_run_id, deleted_at__isnull=True)
     )
+    if stage.status not in {MeshStageRun.Status.QUEUED, MeshStageRun.Status.RUNNING}:
+        return stage, None
+    if stage.loop_run.status in {MeshLoopRun.Status.CANCELED, MeshLoopRun.Status.COMPLETED, MeshLoopRun.Status.FAILED}:
+        return stage, None
     if not stage.assigned_agent_id:
         leave_stage_unassigned(stage)
         return stage, None
@@ -264,6 +267,9 @@ def _send_agent_task(stage: MeshStageRun, attempt: MeshRunAttempt) -> dict:
         "mesh_stage_run_id": str(stage.id),
         "work_item_id": str(stage.loop_run.work_item_id),
         "project_id": str(stage.project_id),
+        "loop_slug": stage.loop_run.definition.slug,
+        "stage_node_id": stage.node_id,
+        "work_item_name": stage.loop_run.work_item.name,
         "required_evidence": stage.required_evidence,
         "project_policy_url": f"/api/workspaces/{stage.workspace.slug}/projects/{stage.project_id}/mesh/policy/",
     }
@@ -365,6 +371,8 @@ def _auth_headers(execution_profile: AgentExecutionProfile | None) -> dict[str, 
 @transaction.atomic
 def _record_start_failure(stage_run_id, attempt_id, message):
     stage = MeshStageRun.objects.select_for_update().select_related("loop_run__work_item").get(id=stage_run_id)
+    if stage.status not in {MeshStageRun.Status.QUEUED, MeshStageRun.Status.RUNNING}:
+        return
     actor_agent = stage.assigned_agent
     MeshRunAttempt.objects.filter(id=attempt_id).update(
         status=MeshRunAttempt.Status.FAILED,
@@ -391,20 +399,21 @@ def _record_start_failure(stage_run_id, attempt_id, message):
 @transaction.atomic
 def _record_completion(attempt_id: str, completion: dict, provider_state: str) -> dict:
     attempt = (
-        MeshRunAttempt.objects.select_for_update()
+        MeshRunAttempt.objects.select_for_update(of=("self",))
         .select_related("stage_run__loop_run", "agent__user")
         .get(id=attempt_id, deleted_at__isnull=True)
     )
-    if attempt.status == MeshRunAttempt.Status.SUCCEEDED:
-        return {"status": "succeeded", "attempt_id": str(attempt.id), "idempotent": True}
+    if attempt.status in {MeshRunAttempt.Status.SUCCEEDED, MeshRunAttempt.Status.FAILED, MeshRunAttempt.Status.CANCELED}:
+        return {"status": attempt.status, "attempt_id": str(attempt.id), "idempotent": True}
     if str(completion.get("outcome") or "succeeded") == "failed":
         return _record_terminal_failure(attempt.id, "agent_failed", "Agent reported a failed stage outcome")
     usage = completion.get("usage") if isinstance(completion.get("usage"), dict) else {}
     attempt.provider_state = provider_state
     attempt.model = str(completion.get("model") or attempt.model)
     attempt.usage = {**dict(attempt.usage or {}), **usage}
-    attempt.input_tokens = max(int(usage.get("input_tokens") or usage.get("inputTokens") or 0), 0)
-    attempt.output_tokens = max(int(usage.get("output_tokens") or usage.get("outputTokens") or 0), 0)
+    attempt.input_tokens = max(int(usage.get("input_tokens") or usage.get("inputTokens") or usage.get("input") or 0), 0)
+    attempt.output_tokens = max(int(usage.get("output_tokens") or usage.get("outputTokens") or usage.get("output") or 0), 0)
+    attempt.latency_ms = max(int(completion.get("latency_ms") or 0), 0)
     attempt.heartbeat_at = timezone.now()
     attempt.save(
         update_fields=[
@@ -413,6 +422,7 @@ def _record_completion(attempt_id: str, completion: dict, provider_state: str) -
             "usage",
             "input_tokens",
             "output_tokens",
+            "latency_ms",
             "heartbeat_at",
             "updated_at",
         ]
@@ -431,11 +441,11 @@ def _record_completion(attempt_id: str, completion: dict, provider_state: str) -
 @transaction.atomic
 def _record_terminal_failure(attempt_id: str, code: str, message: str) -> dict:
     attempt = (
-        MeshRunAttempt.objects.select_for_update()
+        MeshRunAttempt.objects.select_for_update(of=("self",))
         .select_related("stage_run__loop_run__work_item")
         .get(id=attempt_id, deleted_at__isnull=True)
     )
-    if attempt.status in {MeshRunAttempt.Status.SUCCEEDED, MeshRunAttempt.Status.FAILED}:
+    if attempt.status in {MeshRunAttempt.Status.SUCCEEDED, MeshRunAttempt.Status.FAILED, MeshRunAttempt.Status.CANCELED}:
         return {"status": attempt.status, "attempt_id": str(attempt.id), "idempotent": True}
     now = timezone.now()
     attempt.status = MeshRunAttempt.Status.FAILED

@@ -392,7 +392,7 @@ class MeshStageAssignmentEndpoint(BaseAPIView):
     @transaction.atomic
     def post(self, request, slug, project_id, stage_run_id):
         stage = (
-            MeshStageRun.objects.select_for_update()
+            MeshStageRun.objects.select_for_update(of=("self",))
             .select_related("loop_run__work_item", "functional_role", "loop_run__definition")
             .filter(id=stage_run_id, project_id=project_id, deleted_at__isnull=True)
             .first()

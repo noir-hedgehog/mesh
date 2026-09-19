@@ -55,6 +55,8 @@ def list_eligible_agents(
         MeshProjectMemberRole.objects.filter(
             project_id=project_id,
             project_member__is_active=True,
+            project_member__deleted_at__isnull=True,
+            project_member__member__is_active=True,
             project_member__role__gte=15,
             functional_role__key__in=normalized_roles,
             deleted_at__isnull=True,
@@ -105,6 +107,9 @@ def list_eligible_agents(
 
 @transaction.atomic
 def leave_stage_unassigned(stage_run: MeshStageRun) -> MeshStageRun:
+    stage_run.refresh_from_db()
+    if stage_run.status in {MeshStageRun.Status.SUCCEEDED, MeshStageRun.Status.FAILED, MeshStageRun.Status.CANCELED}:
+        return stage_run
     previous_agent = stage_run.assigned_agent
     if previous_agent:
         MeshHandoff.objects.filter(
@@ -139,6 +144,10 @@ def assign_stage(
         .select_related("loop_run__work_item")
         .get(id=stage_run.id, deleted_at__isnull=True)
     )
+    if stage_run.status not in {MeshStageRun.Status.WAITING_FOR_ASSIGNEE, MeshStageRun.Status.QUEUED}:
+        raise ValueError(f"Stage cannot be assigned from status {stage_run.status}")
+    if stage_run.loop_run.status in {MeshLoopRun.Status.COMPLETED, MeshLoopRun.Status.FAILED, MeshLoopRun.Status.CANCELED}:
+        raise ValueError("A terminal Loop cannot be assigned")
     previous_stage = (
         MeshStageRun.objects.filter(
             loop_run_id=stage_run.loop_run_id,

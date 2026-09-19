@@ -33,11 +33,14 @@ def validate_stage_evidence(stage: MeshStageRun, evidence: list) -> list[dict]:
         if not isinstance(item, dict):
             raise ValueError(f"evidence[{index}] must be an object")
         value = dict(item)
+        unknown = set(value) - {"key", "kind", "title", "uri", "summary", "metadata"}
+        if unknown:
+            raise ValueError(f"evidence[{index}] contains unsupported fields: {', '.join(sorted(unknown))}")
         for field in ("key", "kind", "title"):
-            text = str(value.get(field) or "").strip()
-            if not text:
+            text = value.get(field)
+            if not isinstance(text, str) or not text.strip():
                 raise ValueError(f"evidence[{index}].{field} is required")
-            value[field] = text
+            value[field] = text.strip()
         if value["key"] in keys:
             raise ValueError(f"duplicate evidence key: {value['key']}")
         keys.add(value["key"])
@@ -56,6 +59,7 @@ def validate_stage_evidence(stage: MeshStageRun, evidence: list) -> list[dict]:
 
 @transaction.atomic
 def start_loop(*, definition: MeshLoopDefinition, work_item: Issue, actor: User) -> tuple[MeshLoopRun, bool]:
+    work_item = Issue.objects.select_for_update().get(id=work_item.id)
     existing = MeshLoopRun.objects.filter(
         work_item=work_item,
         status__in=[
@@ -198,7 +202,7 @@ def complete_stage(
     handoff_target_agent_id: str | None = None,
 ) -> MeshLoopRun:
     stage = (
-        MeshStageRun.objects.select_for_update()
+        MeshStageRun.objects.select_for_update(of=("self",))
         .select_related("loop_run__definition", "loop_run__work_item", "assigned_agent")
         .get(id=stage_run_id, deleted_at__isnull=True)
     )
@@ -208,7 +212,7 @@ def complete_stage(
         raise ValueError(f"Stage cannot be completed from status {stage.status}")
     if outcome not in {"succeeded", "failed"}:
         raise ValueError("outcome must be succeeded or failed")
-    normalized_evidence = validate_stage_evidence(stage, evidence) if outcome == "succeeded" else list(evidence or [])
+    normalized_evidence = validate_stage_evidence(stage, evidence) if outcome == "succeeded" else []
     attempt = stage.attempts.filter(deleted_at__isnull=True).order_by("-created_at").first()
     now = timezone.now()
     if attempt:
@@ -217,6 +221,15 @@ def complete_stage(
         attempt.completed_at = now
         attempt.save(update_fields=["status", "evidence", "completed_at", "updated_at"])
     if outcome == "failed":
+        if attempt:
+            from plane.bgtasks.mesh_runner import _record_terminal_failure
+
+            # The failure service owns retry budgets for both MCP and A2A.
+            attempt.status = MeshRunAttempt.Status.RUNNING
+            attempt.save(update_fields=["status"])
+            _record_terminal_failure(attempt.id, "agent_failed", "Agent reported a failed stage outcome")
+            stage.loop_run.refresh_from_db()
+            return stage.loop_run
         stage.status = MeshStageRun.Status.FAILED
         stage.completed_at = now
         stage.save(update_fields=["status", "completed_at", "updated_at"])
@@ -325,7 +338,7 @@ def _assign_handoff_target(*, run: MeshLoopRun, actor_agent: AgentProfile, targe
 @transaction.atomic
 def resolve_approval(*, approval: MeshApproval, reviewer: User, approved: bool, decision_note: str) -> MeshLoopRun:
     approval = (
-        MeshApproval.objects.select_for_update()
+        MeshApproval.objects.select_for_update(of=("self",))
         .select_related("loop_run__definition", "loop_run__work_item", "stage_run")
         .get(id=approval.id)
     )
@@ -436,7 +449,7 @@ def _advance_from_node(*, stage: MeshStageRun, node_id: str, selected_next_node_
 @transaction.atomic
 def resume_wait(*, stage_run_id: str, wait_node_id: str) -> MeshLoopRun:
     stage = (
-        MeshStageRun.objects.select_for_update()
+        MeshStageRun.objects.select_for_update(of=("self",))
         .select_related("loop_run__definition", "loop_run__work_item")
         .get(id=stage_run_id, deleted_at__isnull=True)
     )

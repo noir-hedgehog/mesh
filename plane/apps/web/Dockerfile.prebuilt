@@ -1,0 +1,9 @@
+# Copyright (c) 2026-present Mesh contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+FROM nginx:1.27-alpine
+COPY nginx/nginx.conf /etc/nginx/nginx.conf
+COPY build/client /usr/share/nginx/html
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:3000/ >/dev/null || exit 1
+CMD ["nginx", "-g", "daemon off;"]

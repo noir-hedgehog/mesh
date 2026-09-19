@@ -9,6 +9,8 @@ import os
 import re
 import sqlite3
 import subprocess
+import tempfile
+from uuid import UUID
 from pathlib import Path
 from typing import Any
 
@@ -87,7 +89,8 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 def _extract_openclaw_text(payload: dict[str, Any]) -> str:
     values: list[str] = []
-    for item in payload.get("result", {}).get("payloads", []):
+    result = payload.get("result", payload)
+    for item in result.get("payloads", []):
         if not isinstance(item, dict):
             continue
         value = item.get("text") or item.get("content") or item.get("message")
@@ -97,11 +100,14 @@ def _extract_openclaw_text(payload: dict[str, Any]) -> str:
 
 
 def _completion_payload(result: dict[str, Any], text: str, *, agent_id: str, branch: str | None) -> dict[str, Any]:
+    runtime = result.get("result", result)
+    meta = runtime.get("meta", {})
+    agent_meta = meta.get("agentMeta", {})
     reported = _extract_json(text)
     evidence = reported.get("evidence") if isinstance(reported.get("evidence"), list) else []
     if not evidence:
         evidence = [{"key": "summary", "kind": "text", "title": "Agent summary", "summary": text[:4000]}]
-    usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+    usage = agent_meta.get("usage") or runtime.get("usage") or {}
     return {
         "schema_version": 1,
         "outcome": str(reported.get("outcome") or "succeeded"),
@@ -109,9 +115,10 @@ def _completion_payload(result: dict[str, Any], text: str, *, agent_id: str, bra
         "handoff_target_agent_id": reported.get("handoff_target_agent_id"),
         "selected_next_node_id": reported.get("selected_next_node_id"),
         "agent_id": agent_id,
-        "provider": "openclaw",
-        "model": reported.get("model") or result.get("model") or os.environ.get("MESH_GATEWAY_DEFAULT_MODEL", "runtime-reported"),
+        "provider": agent_meta.get("provider") or "openclaw",
+        "model": agent_meta.get("model") or runtime.get("model") or "unspecified",
         "usage": usage,
+        "latency_ms": meta.get("durationMs", 0),
         "branch": branch,
     }
 
@@ -122,6 +129,7 @@ def _worktree(metadata: dict[str, Any]) -> tuple[Path | None, str | None]:
     repository = project_repositories().get(project_id)
     if not repository or not run_id:
         return None, None
+    run_id = str(UUID(run_id))
     if not (repository / ".git").exists():
         raise ValueError(f"Configured repository is not a git checkout: {repository}")
     root = Path(os.environ.get("MESH_GATEWAY_WORKTREE_ROOT", "~/.mesh/worktrees")).expanduser().resolve()
@@ -196,6 +204,10 @@ class OpenClawExecutor(AgentExecutor):
             "Use the installed mesh-plane-workflow Skill and production Mesh MCP for project context. "
             "Do not expose tokens. Work only in the supplied workspace when present.\n"
             f"Mesh metadata: {json.dumps(metadata, ensure_ascii=False)}\n"
+            f"Task workspace: {worktree or 'not configured'}. Do not push or merge.\n"
+            "Read the Work Item to obtain its requested change. Read the latest Policy. Discover Skills and Knowledge; "
+            "include their actual version and Page/heading references in Evidence. "
+            "Return the completion Artifact here; the Runner advances the Stage, so do not call mesh_complete_stage yourself.\n"
             f"Required evidence keys: {json.dumps(required, ensure_ascii=False)}\n"
             "Return one JSON object with outcome, evidence, and optional handoff_target_agent_id. "
             "Each evidence item must contain key, kind, and title; summary, uri, and metadata are optional."
@@ -206,6 +218,7 @@ class OpenClawExecutor(AgentExecutor):
             "agent",
             "--agent",
             self.agent_id,
+            "--local",
             "--session-key",
             session_key,
             "--message",
@@ -214,15 +227,39 @@ class OpenClawExecutor(AgentExecutor):
             "--timeout",
             os.environ.get("MESH_GATEWAY_RUN_TIMEOUT_SECONDS", "3600"),
         ]
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=str(worktree) if worktree else None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        self._processes[context.task_id or session_key] = process
-        stdout, stderr = await process.communicate()
-        self._processes.pop(context.task_id or session_key, None)
+        # Embedded execution reads a private per-task config so OpenClaw's
+        # configured workspace cannot override the Loop worktree via its Gateway.
+        source = Path(os.environ.get("OPENCLAW_CONFIG_PATH", "~/.openclaw/openclaw.json")).expanduser()
+        config = json.loads(source.read_text())
+        for agent in config.get("agents", {}).get("list", []):
+            if agent.get("id") == self.agent_id and worktree:
+                agent["workspace"] = str(worktree)
+        servers = config.get("mcp", {}).get("servers", {})
+        config.setdefault("mcp", {})["servers"] = {
+            name: server for name, server in servers.items()
+            if not name.startswith(("plane-native-", "agentpm-plane")) or name == f"plane-native-{self.agent_id}"
+        }
+        with tempfile.TemporaryDirectory(prefix="mesh-run-config-") as directory:
+            config_path = Path(directory) / "openclaw.json"
+            config_path.write_text(json.dumps(config))
+            config_path.chmod(0o600)
+            process = await asyncio.create_subprocess_exec(
+                *command, cwd=str(worktree) if worktree else None,
+                env={**os.environ, "OPENCLAW_CONFIG_PATH": str(config_path)},
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            self._processes[context.task_id or session_key] = process
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=int(os.environ.get("MESH_GATEWAY_RUN_TIMEOUT_SECONDS", "3600")) + 30,
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
+                raise
+            finally:
+                self._processes.pop(context.task_id or session_key, None)
         if process.returncode:
             raise RuntimeError(f"OpenClaw exited with status {process.returncode}: {redact(stderr.decode())}")
         try:
@@ -265,6 +302,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         if len(key) > 255:
             return JSONResponse({"error": "Idempotency-Key must be at most 255 characters"}, status_code=400)
+        key = f"{request.url.path}:{key}"
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             cached = await asyncio.to_thread(self._read, key)
@@ -348,9 +386,10 @@ def create_app() -> Starlette:
     routes = [Route("/health", lambda request: JSONResponse({"status": "ok", "service": "mesh-agent-gateway", "protocol_version": "1.0"}))]
     for agent_id, config in configured_agents().items():
         card = _agent_card(agent_id, config, host)
+        agent_store = DatabaseTaskStore(engine, owner_resolver=lambda context, owner=agent_id: owner)
         handler = DefaultRequestHandler(
             agent_executor=OpenClawExecutor(agent_id),
-            task_store=task_store,
+            task_store=agent_store,
             agent_card=card,
         )
         routes.extend(create_jsonrpc_routes(handler, f"/agents/{agent_id}/a2a"))

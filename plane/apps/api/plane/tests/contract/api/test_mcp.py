@@ -892,7 +892,7 @@ def test_mesh_loop_start_strict_evidence_completion_and_cancel(native_mcp_data):
         state=native_mcp_data["states"]["todo"],
     )
     second = mcp_call(
-        admin_client,
+        authenticate(native_mcp_data["client"], native_mcp_data["tokens"]["hekate"]),
         "agentpm",
         "mesh_start_loop",
         {"project_id": str(project.id), "work_item_id": str(second_issue.id), "loop_slug": definition.slug},
@@ -1033,7 +1033,8 @@ def test_human_admin_creates_agent_identity_and_separate_execution_profile(nativ
     details = client.get(f"/api/workspaces/agentpm/agents/{response.json()['workspace_member_id']}/")
     assert details.status_code == 200
     assert details.json()["default_execution"]["has_secret_reference"] is True
-    assert "secret_reference" not in json.dumps(details.json())
+    assert "secret_reference" not in details.json()["default_execution"]
+    assert "NOVA_TOKEN" not in json.dumps(details.json())
 
     updated = client.patch(
         f"/api/workspaces/agentpm/agents/{response.json()['workspace_member_id']}/",

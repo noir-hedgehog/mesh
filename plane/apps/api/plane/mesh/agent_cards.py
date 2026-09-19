@@ -40,6 +40,9 @@ def agent_card_url(endpoint_url: str) -> str:
 
 
 def sync_agent_card(profile, *, timeout: int = 10):
+    # Invalidate the previous Card before any network or schema validation.
+    profile.agent_card = {"available": False, "sync_pending": True}
+    profile.save(update_fields=["agent_card", "updated_at"])
     if not profile.endpoint_url:
         raise ValueError("Agent endpoint_url is required before syncing its Agent Card")
     validate_agent_endpoint(profile.endpoint_url)
@@ -51,12 +54,15 @@ def sync_agent_card(profile, *, timeout: int = 10):
         profile.agent_card = {**dict(profile.agent_card or {}), "available": False, "sync_error": str(exc)[:500]}
         profile.save(update_fields=["agent_card", "updated_at"])
         raise ValueError(f"Agent Card sync failed: {exc}") from exc
+    if not isinstance(card, dict):
+        raise ValueError("Agent Card must be an object")
     interfaces = card.get("supportedInterfaces") or card.get("supported_interfaces") or []
     interface = next(
         (
             item
             for item in interfaces
-            if str(item.get("protocolVersion") or item.get("protocol_version")) == "1.0"
+            if isinstance(item, dict)
+            and str(item.get("protocolVersion") or item.get("protocol_version")) == "1.0"
             and str(item.get("protocolBinding") or item.get("protocol_binding")).upper() == "JSONRPC"
         ),
         None,
