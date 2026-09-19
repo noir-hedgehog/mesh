@@ -8,6 +8,7 @@ import os
 import urllib.error
 import urllib.request
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 
 from celery import shared_task
 from django.db import transaction
@@ -405,15 +406,26 @@ def _record_completion(attempt_id: str, completion: dict, provider_state: str) -
     )
     if attempt.status in {MeshRunAttempt.Status.SUCCEEDED, MeshRunAttempt.Status.FAILED, MeshRunAttempt.Status.CANCELED}:
         return {"status": attempt.status, "attempt_id": str(attempt.id), "idempotent": True}
-    if str(completion.get("outcome") or "succeeded") == "failed":
-        return _record_terminal_failure(attempt.id, "agent_failed", "Agent reported a failed stage outcome")
     usage = completion.get("usage") if isinstance(completion.get("usage"), dict) else {}
     attempt.provider_state = provider_state
-    attempt.model = str(completion.get("model") or attempt.model)
-    attempt.usage = {**dict(attempt.usage or {}), **usage}
-    attempt.input_tokens = max(int(usage.get("input_tokens") or usage.get("inputTokens") or usage.get("input") or 0), 0)
-    attempt.output_tokens = max(int(usage.get("output_tokens") or usage.get("outputTokens") or usage.get("output") or 0), 0)
-    attempt.latency_ms = max(int(completion.get("latency_ms") or 0), 0)
+    attempt.model = str(completion.get("model") or attempt.model)[:255]
+    attempt.input_tokens = _usage_counter(usage.get("input_tokens", usage.get("inputTokens", usage.get("input", 0))))
+    attempt.output_tokens = _usage_counter(usage.get("output_tokens", usage.get("outputTokens", usage.get("output", 0))))
+    attempt.latency_ms = _usage_counter(completion.get("latency_ms", 0))
+    attempt.usage = {
+        **dict(attempt.usage or {}),
+        "input_tokens": attempt.input_tokens,
+        "output_tokens": attempt.output_tokens,
+    }
+    if isinstance(completion.get("provider"), str):
+        attempt.usage["_mesh_model_provider"] = completion["provider"][:128]
+    try:
+        cost = Decimal(str(completion.get("cost")))
+        if cost.is_finite() and 0 <= cost <= Decimal("99999999.999999"):
+            attempt.cost = cost.quantize(Decimal("0.000001"))
+            attempt.usage["_mesh_cost_reported"] = True
+    except InvalidOperation:
+        pass
     attempt.heartbeat_at = timezone.now()
     attempt.save(
         update_fields=[
@@ -423,19 +435,31 @@ def _record_completion(attempt_id: str, completion: dict, provider_state: str) -
             "input_tokens",
             "output_tokens",
             "latency_ms",
+            "cost",
             "heartbeat_at",
             "updated_at",
         ]
     )
-    run = complete_stage(
-        stage_run_id=str(attempt.stage_run_id),
-        actor_agent=attempt.agent,
-        outcome=str(completion.get("outcome") or "succeeded"),
-        evidence=list(completion.get("evidence") or []),
-        selected_next_node_id=completion.get("selected_next_node_id"),
-        handoff_target_agent_id=completion.get("handoff_target_agent_id"),
-    )
+    if completion.get("outcome") == "failed":
+        return _record_terminal_failure(attempt.id, "agent_failed", "Agent reported a failed stage outcome")
+    try:
+        # Keep provider telemetry even when stage validation rolls back.
+        with transaction.atomic():
+            run = complete_stage(
+                stage_run_id=str(attempt.stage_run_id),
+                actor_agent=attempt.agent,
+                outcome=completion.get("outcome", ""),
+                evidence=completion.get("evidence") or [],
+                selected_next_node_id=completion.get("selected_next_node_id"),
+                handoff_target_agent_id=completion.get("handoff_target_agent_id"),
+            )
+    except ValueError as exc:
+        return _record_terminal_failure(attempt.id, "invalid_evidence", str(exc))
     return {"status": run.status, "attempt_id": str(attempt.id), "run_id": str(run.id)}
+
+
+def _usage_counter(value):
+    return value if type(value) is int and 0 <= value <= 9223372036854775807 else 0
 
 
 @transaction.atomic

@@ -131,6 +131,14 @@ class MeshRunAttempt(WorkspaceBaseModel):
     heartbeat_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 
+    @property
+    def reported_cost(self):
+        return str(self.cost) if self.cost or (self.usage or {}).get("_mesh_cost_reported") is True else None
+
+    @property
+    def model_provider(self):
+        return (self.usage or {}).get("_mesh_model_provider")
+
     class Meta:
         db_table = "mesh_run_attempts"
         ordering = ("created_at",)

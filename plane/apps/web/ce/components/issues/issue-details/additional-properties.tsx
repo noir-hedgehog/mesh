@@ -36,13 +36,19 @@ type Runtime = {
     assigned_agent_id: string | null;
     functional_role: string | null;
     attempts: Array<{
+      id: string;
+      agent_id: string;
+      status: string;
       provider: string;
+      model_provider: string | null;
       model: string;
-      cost: string;
+      cost: string | null;
+      input_tokens: number;
+      output_tokens: number;
       provider_state: string;
       failure_code: string;
       failure_message: string;
-      evidence: Array<{ key?: string; title?: string }>;
+      evidence: Array<{ key: string; title: string; summary?: string; uri?: string; metadata?: unknown }>;
     }>;
   }>;
   handoffs?: Array<{
@@ -70,6 +76,7 @@ export const WorkItemAdditionalSidebarProperties = observer(function WorkItemAdd
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [eligibleAgents, setEligibleAgents] = useState<EligibleAgent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState("");
+  const [selectedLoopId, setSelectedLoopId] = useState("");
 
   useEffect(() => {
     if (!labels) void fetchProjectLabels(workspaceSlug, projectId);
@@ -105,6 +112,12 @@ export const WorkItemAdditionalSidebarProperties = observer(function WorkItemAdd
       active = false;
     };
   }, [loadRuntime]);
+
+  useEffect(() => {
+    if (!runtime || !ACTIVE_RUN_STATES.has(runtime.status)) return;
+    const interval = window.setInterval(() => void loadRuntime().catch(() => undefined), 10000);
+    return () => window.clearInterval(interval);
+  }, [loadRuntime, runtime?.id, runtime?.status]);
 
   const latestStage = runtime?.stages?.at(-1);
 
@@ -159,7 +172,7 @@ export const WorkItemAdditionalSidebarProperties = observer(function WorkItemAdd
   const canCancel = isEditable && runtime && ACTIVE_RUN_STATES.has(runtime.status);
 
   const startLoop = async () => {
-    const loop = publishedLoops[0];
+    const loop = publishedLoops.find((item) => item.id === selectedLoopId) ?? publishedLoops[0];
     if (!loop) return;
     setRuntimeBusy(true);
     try {
@@ -301,7 +314,9 @@ export const WorkItemAdditionalSidebarProperties = observer(function WorkItemAdd
             {(latestStage?.assigned_agent_id || latestAttempt) && (
               <div className="mt-0.5 truncate text-tertiary">
                 {latestStage?.assigned_agent_id || "Unassigned"}
-                {latestAttempt ? ` / ${latestAttempt.provider}:${latestAttempt.model} / ${latestAttempt.cost}` : ""}
+                {latestAttempt
+                  ? ` / ${latestAttempt.model_provider || latestAttempt.provider}:${latestAttempt.model} / ${latestAttempt.cost ?? "Cost unknown"}`
+                  : ""}
               </div>
             )}
             {latestAttempt?.provider_state && (
@@ -346,6 +361,61 @@ export const WorkItemAdditionalSidebarProperties = observer(function WorkItemAdd
                 {latestHandoff.from_agent_id || "Mesh"} to {latestHandoff.target_agent_id || "Unassigned"} /{" "}
                 {latestHandoff.status}
               </div>
+            )}
+            {canStart && publishedLoops.length > 1 && (
+              <select
+                aria-label="Loop definition"
+                value={selectedLoopId || publishedLoops[0].id}
+                onChange={(event) => setSelectedLoopId(event.target.value)}
+                className="mt-1 h-7 w-full min-w-0 rounded-sm border border-subtle bg-surface-1 px-1 text-primary"
+              >
+                {publishedLoops.map((loop) => (
+                  <option key={loop.id} value={loop.id}>
+                    {loop.name} v{loop.version}
+                  </option>
+                ))}
+              </select>
+            )}
+            {!!runtime?.stages?.length && (
+              <details className="mt-2 min-w-0 border-t border-subtle pt-2">
+                <summary className="cursor-pointer text-secondary">Execution details</summary>
+                <div className="mt-2 max-h-96 space-y-3 overflow-y-auto [overflow-wrap:anywhere] break-words">
+                  {runtime.stages.map((stage) => (
+                    <section key={stage.id} aria-label={`${stage.node_id} execution`}>
+                      <div className="font-medium">
+                        {stage.node_id} / {stage.status}
+                      </div>
+                      {stage.attempts.map((attempt, index) => (
+                        <div key={attempt.id} className="mt-2 space-y-1 border-l border-subtle pl-2">
+                          <div>
+                            {index + 1}. {attempt.agent_id} / {attempt.status}
+                          </div>
+                          <div className="text-tertiary">
+                            {attempt.model_provider || attempt.provider} / {attempt.model}
+                          </div>
+                          <div className="text-tertiary">
+                            Tokens: {attempt.input_tokens} in / {attempt.output_tokens} out
+                          </div>
+                          <div className="text-tertiary">Cost: {attempt.cost ?? "Unknown"}</div>
+                          {attempt.failure_message && <p className="text-danger-primary">{attempt.failure_message}</p>}
+                          {attempt.evidence.map((entry) => (
+                            <details key={entry.key} className="pt-1">
+                              <summary className="cursor-pointer">{entry.title}</summary>
+                              {entry.summary && <p className="mt-1 whitespace-pre-wrap">{entry.summary}</p>}
+                              {entry.uri && <div className="font-mono mt-1 text-tertiary">{entry.uri}</div>}
+                              {entry.metadata != null && (
+                                <pre className="mt-1 whitespace-pre-wrap text-tertiary">
+                                  {JSON.stringify(entry.metadata, null, 2)}
+                                </pre>
+                              )}
+                            </details>
+                          ))}
+                        </div>
+                      ))}
+                    </section>
+                  ))}
+                </div>
+              </details>
             )}
           </div>
         </SidebarPropertyListItem>
