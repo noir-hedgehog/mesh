@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import tempfile
@@ -85,6 +86,15 @@ def plain_metadata(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [plain_metadata(item) for item in value]
     return value
+
+
+def execution_environment(config_path: Path) -> dict[str, str]:
+    return {
+        **{key: value for key, value in os.environ.items()
+           if not key.startswith(("MESH_GATEWAY_", "PLANE_AGENT_", "PLANE_API_", "AGENTPM_"))
+           and key not in {"MESH_AGENT_GATEWAY_TOKEN", "MESH_ADMIN_TOKEN"}},
+        "OPENCLAW_CONFIG_PATH": str(config_path),
+    }
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -173,6 +183,7 @@ class OpenClawExecutor(AgentExecutor):
     def __init__(self, agent_id: str):
         self.agent_id = agent_id
         self._processes: dict[str, asyncio.subprocess.Process] = {}
+        self._canceled: set[str] = set()
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id or context.message.message_id
@@ -184,6 +195,8 @@ class OpenClawExecutor(AgentExecutor):
         try:
             worktree, branch = await asyncio.to_thread(_worktree, context.metadata)
             result = await self._run_openclaw(context, worktree)
+            if task_id in self._canceled:
+                return
             summary = _extract_openclaw_text(result)
             completion = _completion_payload(result, summary, agent_id=self.agent_id, branch=branch)
             await updater.add_artifact(
@@ -197,14 +210,27 @@ class OpenClawExecutor(AgentExecutor):
             await updater.cancel()
             raise
         except Exception as exc:
+            if task_id in self._canceled:
+                return
             message = updater.new_agent_message([Part(text=redact(str(exc)))])
             await updater.failed(message=message)
+        finally:
+            self._canceled.discard(task_id)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id or ""
+        self._canceled.add(task_id)
         process = self._processes.get(task_id)
         if process and process.returncode is None:
-            process.terminate()
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                os.killpg(process.pid, signal.SIGKILL)
+                await process.wait()
         updater = TaskUpdater(event_queue, task_id, context.context_id or task_id)
         await updater.cancel()
 
@@ -245,8 +271,11 @@ class OpenClawExecutor(AgentExecutor):
         source = Path(os.environ.get("OPENCLAW_CONFIG_PATH", "~/.openclaw/openclaw.json")).expanduser()
         config = json.loads(source.read_text())
         for agent in config.get("agents", {}).get("list", []):
-            if agent.get("id") == self.agent_id and worktree:
-                agent["workspace"] = str(worktree)
+            if agent.get("id") == self.agent_id:
+                if worktree:
+                    agent["workspace"] = str(worktree)
+                tool_policy = agent.setdefault("tools", {})
+                tool_policy["alsoAllow"] = sorted(set(tool_policy.get("alsoAllow", [])) | {f"plane-native-{self.agent_id}__*"})
         servers = config.get("mcp", {}).get("servers", {})
         config.setdefault("mcp", {})["servers"] = {
             name: server for name, server in servers.items()
@@ -258,7 +287,8 @@ class OpenClawExecutor(AgentExecutor):
             config_path.chmod(0o600)
             process = await asyncio.create_subprocess_exec(
                 *command, cwd=str(worktree) if worktree else None,
-                env={**os.environ, "OPENCLAW_CONFIG_PATH": str(config_path)},
+                env=execution_environment(config_path),
+                start_new_session=True,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             self._processes[context.task_id or session_key] = process
@@ -268,7 +298,10 @@ class OpenClawExecutor(AgentExecutor):
                 )
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 if process.returncode is None:
-                    process.kill()
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 await process.wait()
                 raise
             finally:

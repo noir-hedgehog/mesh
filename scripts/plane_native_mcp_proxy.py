@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import subprocess
 import sys
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 
 
@@ -39,7 +41,15 @@ def forward(url: str, token: str, payload: dict) -> dict | None:
         headers={"Content-Type": "application/json", "X-Api-Key": token},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310 - operator-configured Plane URL
+    hostname = urlparse(url).hostname or ""
+    direct = hostname == "localhost" or hostname.endswith(".ts.net")
+    try:
+        address = ipaddress.ip_address(hostname)
+        direct = direct or address.is_loopback or address in ipaddress.ip_network("100.64.0.0/10")
+    except ValueError:
+        pass
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({})) if direct else urllib.request.build_opener()
+    with opener.open(request, timeout=60) as response:  # nosec B310 - operator-configured Plane URL
         body = response.read().decode("utf-8")
         return json.loads(body) if body else None
 

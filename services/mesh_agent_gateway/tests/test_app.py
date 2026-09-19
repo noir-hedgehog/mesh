@@ -2,14 +2,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import json
+import asyncio
 import subprocess
 import time
+from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 from google.protobuf.struct_pb2 import Struct
 
-from services.mesh_agent_gateway.app import OpenClawExecutor, _worktree, create_app, plain_metadata, redact
+from services.mesh_agent_gateway.app import OpenClawExecutor, _worktree, create_app, execution_environment, plain_metadata, redact
 
 
 def test_nested_a2a_metadata_is_json_serializable():
@@ -17,6 +20,50 @@ def test_nested_a2a_metadata_is_json_serializable():
     metadata = Struct()
     metadata.update(payload)
     assert json.loads(json.dumps(plain_metadata(dict(metadata)))) == payload
+
+
+def test_runtime_does_not_inherit_gateway_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("MESH_GATEWAY_TOKEN", "gateway-test-secret")
+    monkeypatch.setenv("PLANE_AGENT_TOKEN_MAP", "test-secret-map")
+    monkeypatch.setenv("MESH_AGENT_GATEWAY_TOKEN", "cloud-test-secret")
+    env = execution_environment(tmp_path / "config.json")
+    assert "MESH_GATEWAY_TOKEN" not in env
+    assert "MESH_AGENT_GATEWAY_TOKEN" not in env
+    assert "PLANE_AGENT_TOKEN_MAP" not in env
+    assert env["OPENCLAW_CONFIG_PATH"].endswith("config.json")
+
+
+def test_embedded_runtime_scopes_mcp_and_workspace(tmp_path, monkeypatch):
+    source = tmp_path / "openclaw.json"
+    source.write_text(json.dumps({
+        "agents": {"list": [{"id": "iris", "tools": {"profile": "coding"}}]},
+        "mcp": {"servers": {"plane-native-iris": {}, "plane-native-hekate": {}, "agentpm-plane": {}}},
+    }))
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(source))
+    monkeypatch.setenv("MESH_GATEWAY_TOKEN", "not-for-the-agent")
+    metadata = Struct()
+    metadata.update({"required_evidence": ["summary"]})
+    context = SimpleNamespace(metadata=dict(metadata), task_id="test-task", get_user_input=lambda: "test")
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return b'{"result":{"payloads":[]}}', b""
+
+    async def spawn(*args, **kwargs):
+        config = json.loads(Path(kwargs["env"]["OPENCLAW_CONFIG_PATH"]).read_text())
+        assert list(config["mcp"]["servers"]) == ["plane-native-iris"]
+        assert config["agents"]["list"][0]["tools"]["alsoAllow"] == ["plane-native-iris__*"]
+        assert config["agents"]["list"][0]["workspace"] == str(tmp_path)
+        assert "MESH_GATEWAY_TOKEN" not in kwargs["env"]
+        assert kwargs["start_new_session"] is True
+        assert "--local" in args
+        return Process()
+
+    with patch("services.mesh_agent_gateway.app.asyncio.create_subprocess_exec", spawn):
+        asyncio.run(OpenClawExecutor("iris")._run_openclaw(context, tmp_path))
+    assert "workspace" not in json.loads(source.read_text())["agents"]["list"][0]
 
 
 def _headers():
