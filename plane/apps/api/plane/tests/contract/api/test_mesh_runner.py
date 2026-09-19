@@ -3,6 +3,7 @@
 
 from unittest.mock import patch
 from datetime import timedelta
+import json
 
 import pytest
 from celery.exceptions import Retry
@@ -214,3 +215,25 @@ def test_poll_outage_or_timeout_returns_unassigned_without_reviving_attempt(runn
     assert not IssueAssignee.objects.filter(issue=data["issue"]).exists()
     data["issue"].refresh_from_db()
     assert data["issue"].state_id == data["states"]["todo"].id
+
+
+def test_run_handoffs_are_chronological_in_rest_and_mcp(running_stage):
+    from plane.db.models import MeshHandoff
+    from plane.app.views.project.mesh import _loop_run_dict
+    from .test_mcp import authenticate
+
+    data, stage, attempt = running_stage
+    for node in ("first", "latest"):
+        MeshHandoff.objects.create(
+            workspace=stage.workspace, project=stage.project, loop_run=stage.loop_run,
+            from_stage=stage, from_agent=attempt.agent, target_role=stage.functional_role, to_node_id=node,
+        )
+    assert [item["to_node_id"] for item in _loop_run_dict(stage.loop_run, include_stages=True)["handoffs"]] == ["first", "latest"]
+    client = authenticate(data["client"], data["tokens"]["hekate"])
+    response = client.post("/api/v1/workspaces/agentpm/mcp/", {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "mesh_get_run", "arguments": {"project_id": str(stage.project_id), "run_id": str(stage.loop_run_id)},
+        },
+    }, format="json").json()
+    payload = json.loads(response["result"]["content"][0]["text"])
+    assert [item["to_node_id"] for item in payload["run"]["handoffs"]] == ["first", "latest"]

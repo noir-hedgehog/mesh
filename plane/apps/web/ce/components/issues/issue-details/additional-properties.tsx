@@ -277,7 +277,7 @@ export const WorkItemAdditionalSidebarProperties = observer(function WorkItemAdd
         </select>
       </SidebarPropertyListItem>
       {(runtime || canStart) && (
-        <SidebarPropertyListItem icon={Network} label="Mesh runtime">
+        <SidebarPropertyListItem icon={Network} label="Mesh runtime" childrenClassName="min-w-0">
           <div className="flex w-full min-w-0 flex-col px-2 py-1 text-11">
             <div className="flex items-center justify-between gap-2">
               <span className="truncate text-primary">
@@ -379,7 +379,7 @@ export const WorkItemAdditionalSidebarProperties = observer(function WorkItemAdd
             {!!runtime?.stages?.length && (
               <details className="mt-2 min-w-0 border-t border-subtle pt-2">
                 <summary className="cursor-pointer text-secondary">Execution details</summary>
-                <div className="mt-2 max-h-96 space-y-3 overflow-y-auto [overflow-wrap:anywhere] break-words">
+                <div className="mt-2 max-h-96 min-w-0 space-y-3 overflow-x-hidden overflow-y-auto [overflow-wrap:anywhere]">
                   {runtime.stages.map((stage) => (
                     <section key={stage.id} aria-label={`${stage.node_id} execution`}>
                       <div className="font-medium">

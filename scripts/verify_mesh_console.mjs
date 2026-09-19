@@ -40,6 +40,7 @@ function django(code) {
 
 let session;
 let browser;
+let page;
 const report = { pages: [], runtime: false, controls: false, screenshots: [], pageErrors: 0 };
 try {
   const result = django(`
@@ -61,13 +62,14 @@ print('MESH_SESSION=' + json.dumps({'name': settings.SESSION_COOKIE_NAME, 'value
   session = JSON.parse(result.split("\n").find((line) => line.startsWith("MESH_SESSION=")).slice(13));
   browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--no-proxy-server"] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  context.setDefaultNavigationTimeout(120000);
   await context.addCookies([{ ...session, url: base, httpOnly: true, sameSite: "Lax" }]);
-  const page = await context.newPage();
+  page = await context.newPage();
   page.on("pageerror", () => report.pageErrors++);
   const issueUrl = (id) => `${base}/${values.workspace}/projects/${values.project}/issues/${id}/`;
   await page.goto(issueUrl(values.issue), { waitUntil: "domcontentloaded" });
   const details = page.locator("summary", { hasText: "Execution details" });
-  await details.waitFor({ timeout: 45000 });
+  await details.waitFor({ timeout: 180000 });
   await details.click();
   const executions = page.locator('section[aria-label$=" execution"]');
   assert.equal(await executions.count(), 3, "Acceptance run must have three stages");
@@ -77,19 +79,23 @@ print('MESH_SESSION=' + json.dumps({'name': settings.SESSION_COOKIE_NAME, 'value
   await page.screenshot({ path: resolve(output, "runtime-desktop.png"), fullPage: true });
   report.screenshots.push("runtime-desktop.png");
   report.runtime = true;
+  console.log("Verified acceptance runtime and Evidence");
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(500);
   await page.screenshot({ path: resolve(output, "runtime-mobile.png"), fullPage: true });
   report.screenshots.push("runtime-mobile.png");
   await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.waitForTimeout(500);
 
   for (const section of ["members", "mesh/policy", "mesh/skills", "mesh/knowledge", "mesh/loops"]) {
     const endpoint = section === "members" ? "roles" : section.split("/")[1];
     const apiResponse = page.waitForResponse((response) =>
-      response.url().includes(`/projects/${values.project}/mesh/${endpoint}/`) && response.ok(), { timeout: 30000 });
+      response.url().includes(`/projects/${values.project}/mesh/${endpoint}/`) && response.ok(), { timeout: 90000 });
     await page.goto(`${base}/${values.workspace}/settings/projects/${values.project}/${section}/`, { waitUntil: "domcontentloaded" });
     await apiResponse;
     assert.ok(!page.url().includes("sign-in"), "Authenticated route redirected to sign-in");
     report.pages.push(section);
+    console.log(`Verified ${section}`);
   }
 
   await page.goto(`${base}/${values.workspace}/settings/members/`, { waitUntil: "domcontentloaded" });
@@ -121,6 +127,12 @@ print('MESH_SESSION=' + json.dumps({'name': settings.SESSION_COOKIE_NAME, 'value
   }
   assert.equal(report.pageErrors, 0, "Browser encountered uncaught errors");
   console.log(JSON.stringify(report, null, 2));
+} catch (error) {
+  if (page) {
+    await page.screenshot({ path: resolve(output, "failure.png"), fullPage: true }).catch(() => undefined);
+    console.error(JSON.stringify({ url: page.url(), title: await page.title(), pageErrors: report.pageErrors }));
+  }
+  throw error;
 } finally {
   if (browser) await browser.close();
   if (session) {

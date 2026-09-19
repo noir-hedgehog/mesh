@@ -625,7 +625,7 @@ def _loop_run_dict(run, include_stages=False):
                 "status": handoff.status,
                 "reason": handoff.reason,
             }
-            for handoff in run.handoffs.select_related("from_agent", "target_agent", "target_role")
+            for handoff in run.handoffs.select_related("from_agent", "target_agent", "target_role").order_by("created_at", "id")
         ]
     return payload
 
