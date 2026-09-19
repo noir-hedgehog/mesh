@@ -92,6 +92,16 @@ print('MESH_SESSION=' + json.dumps({'name': settings.SESSION_COOKIE_NAME, 'value
     report.pages.push(section);
   }
 
+  await page.goto(`${base}/${values.workspace}/settings/members/`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Add Agent", exact: true }).click({ timeout: 30000 });
+  await page.getByRole("button", { name: /Iris agent:iris/ }).click({ timeout: 30000 });
+  assert.ok((await page.getByLabel("A2A endpoint", { exact: true }).inputValue()).includes("/agents/iris/"));
+  assert.equal(await page.getByLabel("New secret reference", { exact: true }).inputValue(), "");
+  await page.getByRole("button", { name: "Sync Agent Card", exact: true }).waitFor();
+  await page.screenshot({ path: resolve(output, "agent-profile.png"), fullPage: true });
+  report.screenshots.push("agent-profile.png");
+  report.pages.push("agent-profile (read only)");
+
   if (values["controls-issue"]) {
     await page.goto(issueUrl(values["controls-issue"]), { waitUntil: "domcontentloaded" });
     const start = page.getByRole("button", { name: "Start Loop", exact: true });

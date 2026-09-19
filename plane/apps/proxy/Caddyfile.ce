@@ -28,10 +28,11 @@
 
 	reverse_proxy /static/* api:8000
 
-	redir /agentpm /mesh/ permanent
-	@agentpm_path path_regexp agentpm_path ^/agentpm/(.*)$
-	redir @agentpm_path /mesh/{re.agentpm_path.1} permanent
-	reverse_proxy /mesh/* api:8000
+	# agentpm is also an existing workspace slug. Only alias service endpoints.
+	@agentpm_health path /agentpm/health /agentpm/health/
+	redir @agentpm_health /mesh/health/ permanent
+	@mesh_service path /mesh /mesh/ /mesh/health /mesh/health/
+	reverse_proxy @mesh_service api:8000
 
 	reverse_proxy /{$BUCKET_NAME}/* plane-minio:9000
 	reverse_proxy /{$BUCKET_NAME} plane-minio:9000
