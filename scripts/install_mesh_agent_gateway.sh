@@ -79,8 +79,11 @@ OPENCLAW_WRAPPER="$INSTALL_DIR/openclaw-node24"
 } > "$OPENCLAW_WRAPPER"
 chmod 700 "$OPENCLAW_WRAPPER"
 
-"$PYTHON_BIN" -m venv "$VENV"
-"$VENV/bin/pip" install --disable-pip-version-check -r "$ROOT_DIR/services/mesh_agent_gateway/requirements.txt"
+if [ ! -x "$VENV/bin/python" ]; then
+  "$PYTHON_BIN" -m venv "$VENV"
+fi
+"$VENV/bin/python" -c 'import sys; assert sys.version_info >= (3, 12), "Python 3.12 or newer is required"'
+"$VENV/bin/python" -m pip install --disable-pip-version-check -r "$ROOT_DIR/services/mesh_agent_gateway/requirements.txt"
 mkdir -p "$INSTALL_DIR/services/mesh_agent_gateway"
 cp "$ROOT_DIR/services/__init__.py" "$INSTALL_DIR/services/__init__.py"
 cp "$ROOT_DIR/services/mesh_agent_gateway/__init__.py" "$INSTALL_DIR/services/mesh_agent_gateway/__init__.py"
@@ -117,7 +120,11 @@ PY
 
 launchctl bootout "gui/$UID/dev.agentpm.openclaw-bridge" >/dev/null 2>&1 || true
 launchctl bootout "gui/$UID/dev.mesh.agent-gateway" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$UID" "$PLIST"
+for attempt in {1..10}; do
+  if launchctl bootstrap "gui/$UID" "$PLIST"; then break; fi
+  if [ "$attempt" -eq 10 ]; then exit 1; fi
+  sleep 1
+done
 launchctl kickstart -k "gui/$UID/dev.mesh.agent-gateway"
 
 for _ in {1..40}; do

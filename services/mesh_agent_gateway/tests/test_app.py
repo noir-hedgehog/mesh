@@ -7,8 +7,16 @@ import time
 from unittest.mock import patch
 
 from starlette.testclient import TestClient
+from google.protobuf.struct_pb2 import Struct
 
-from services.mesh_agent_gateway.app import OpenClawExecutor, _worktree, create_app, redact
+from services.mesh_agent_gateway.app import OpenClawExecutor, _worktree, create_app, plain_metadata, redact
+
+
+def test_nested_a2a_metadata_is_json_serializable():
+    payload = {"required_evidence": ["summary", "tests"], "context": {"version": 1}}
+    metadata = Struct()
+    metadata.update(payload)
+    assert json.loads(json.dumps(plain_metadata(dict(metadata)))) == payload
 
 
 def _headers():

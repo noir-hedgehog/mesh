@@ -33,6 +33,8 @@ from a2a.types import (
     StringList,
 )
 from sqlalchemy.ext.asyncio import create_async_engine
+from google.protobuf.json_format import MessageToDict
+from google.protobuf.message import Message
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -72,6 +74,17 @@ def redact(value: str) -> str:
     for pattern, replacement in TOKEN_PATTERNS:
         result = pattern.sub(replacement, result)
     return result[-4000:]
+
+
+def plain_metadata(value: Any) -> Any:
+    # A2A RequestContext exposes nested Struct values as protobuf messages.
+    if isinstance(value, Message):
+        return MessageToDict(value)
+    if isinstance(value, dict):
+        return {key: plain_metadata(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain_metadata(item) for item in value]
+    return value
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -196,7 +209,7 @@ class OpenClawExecutor(AgentExecutor):
         await updater.cancel()
 
     async def _run_openclaw(self, context: RequestContext, worktree: Path | None) -> dict[str, Any]:
-        metadata = context.metadata
+        metadata = plain_metadata(context.metadata)
         required = list(metadata.get("required_evidence") or [])
         instruction = context.get_user_input() or "Complete the assigned Mesh stage."
         prompt = (

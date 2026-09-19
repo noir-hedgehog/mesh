@@ -79,7 +79,10 @@ Gateway state is stored in `~/.mesh/mesh-agent-gateway.sqlite3`, with a separate
 Build the Console with `pnpm turbo run build --filter=web` from `plane/` on a
 development machine. Transfer `plane/apps/web/build/client/` with the exact source
 commit to the release's `plane/apps/web/` directory, then build the serving image
-using `docker build -f Dockerfile.prebuilt -t plane-web .` in that directory.
+using `docker build -f Dockerfile.prebuilt -t plane-web .` with BuildKit in that
+directory. For hosts with the legacy Docker builder, use
+`tar -cf - Dockerfile.prebuilt nginx/nginx.conf build/client | docker build -f Dockerfile.prebuilt -t plane-web -`
+so the normal development `.dockerignore` does not exclude the built assets.
 This keeps the frontend compiler off the production host. Record the source commit
 and artifact checksum in the release directory. Keep the preceding API and Web
 images tagged by release before replacing the running containers.

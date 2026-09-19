@@ -21,7 +21,7 @@ elif sudo docker volume inspect agent-native-pm_agentpm_data >/dev/null 2>&1; th
 fi
 
 if [ -d "$ROOT_DIR/.agentpm" ]; then
-  tar -czf "$TARGET/agent-registry.tar.gz" -C "$ROOT_DIR" .agentpm
+  tar -hczf "$TARGET/agent-registry.tar.gz" -C "$ROOT_DIR" .agentpm
 fi
 
 secret_files=()
@@ -29,7 +29,7 @@ for file in .env.agentpm plane/.env plane/apps/api/.env; do
   [ -f "$ROOT_DIR/$file" ] && secret_files+=("$file")
 done
 if [ "${#secret_files[@]}" -gt 0 ]; then
-  tar -czf "$TARGET/service-secrets.tar.gz" -C "$ROOT_DIR" "${secret_files[@]}"
+  tar -hczf "$TARGET/service-secrets.tar.gz" -C "$ROOT_DIR" "${secret_files[@]}"
 fi
 
 (cd "$TARGET" && sha256sum ./* > SHA256SUMS)

@@ -1,0 +1,7 @@
+**
+!Dockerfile.prebuilt
+!nginx
+!nginx/nginx.conf
+!build
+!build/client
+!build/client/**

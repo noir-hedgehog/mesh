@@ -46,8 +46,7 @@ ARGS=(
   --cwd "$ROOT_DIR"
   --timeout 20
   --connect-timeout 20
-  --include 'plane_*'
-  --include 'mesh_*'
+  --include 'plane_*,mesh_*'
 )
 
 if [ "$DRY_RUN" -eq 1 ]; then
