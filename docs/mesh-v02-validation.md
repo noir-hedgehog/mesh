@@ -22,7 +22,10 @@ Updated: 2026-09-19. Production remains the only project data source.
 ## Real Execution
 
 Acceptance run: `a6afd0b3-015d-4df8-ac91-2d6f7ee28cc0` (AGPM-26).
-Developer and Tester succeeded; Reviewer validation is in progress.
+Completed at 2026-09-19 14:20:55 UTC with three succeeded Stages, three
+succeeded Attempts, two explicit Handoffs, and seven AuditEvents. Models were
+Iris: kimi-for-coding; Lingxi: MiniMax-M3; Hekate: MiniMax-M2.7. All required
+Evidence keys were present. Work Item assignees were cleared on completion.
 The isolated change is commit `811d48a9e170cd109bd96e7d65af57a55a193a84`.
 It adds a dependency-free label helper for literal A2A TASK_STATE_* wire values.
 The commit remains on its isolated run branch and is not merged or pushed.
@@ -58,7 +61,6 @@ Evidence. Missing Evidence exhausted the configured retry budget as expected.
 
 Do not create mesh-v0.2.0 or freeze the contracts yet.
 
-- Complete the Reviewer stage and verify final audit/timeline counts.
 - Authenticated Console smoke for runtime actions, profiles, and Evidence detail;
   only the sign-in screen has been browser-verified in this continuation.
 - Complete startup retry, Gateway outage, timeout, and restart-in-flight drills.
