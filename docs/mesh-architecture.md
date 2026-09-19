@@ -32,3 +32,8 @@ Each Skill version is a strict `SKILL.md` document backed by a Markdown Page/Pag
 ## Compatibility
 
 `plane_*`, `AGENTPM_*`, `/agentpm/`, and the old Skill prompt/resource aliases remain for one compatibility release. New integrations should use `MESH_*`, `/mesh/`, the `mesh-plane-workflow` Skill, and `mesh_*` tools. Plane-native MCP always derives identity from `X-Api-Key`; callers cannot switch identity using an `agent_id` parameter.
+
+The `agentpm` workspace retains its existing Console URLs. The proxy aliases
+`/agentpm/health[/]` to `/mesh/health/`, not the entire `/agentpm/*` prefix:
+workspace pages must never be redirected to service endpoints. New project APIs
+use the workspace-scoped `/api/.../mesh/` routes.

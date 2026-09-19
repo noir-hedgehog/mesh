@@ -43,29 +43,70 @@ Evidence. Missing Evidence exhausted the configured retry budget as expected.
 
 ## Verification
 
-- Root Python regression: 83 tests passed.
+- Root Python regression: 85 tests passed.
 - Gateway: 6 tests passed, covering A2A auth/idempotency/persistence, worktrees,
   metadata conversion, isolated config/credentials, and file Artifacts.
-- Plane MCP: 26 contract tests passed; Runner: 9; source formats: 10.
+- Plane MCP: 26 contract tests passed; Runner: 20; source formats: 10.
 - Django check and migration drift check passed.
-- Console production build passed locally; production sign-in page rendered with
-  Mesh branding, AGPL link, and Plane CE attribution.
+- Console production build and typecheck passed locally. Authenticated production
+  browser smoke passed with zero uncaught errors: all three actual execution
+  models and expandable Evidence, Members, Policy, Skills, Knowledge, Loops,
+  and read-only Agent execution profile inspection. The secret-reference edit
+  field remained empty. Desktop and mobile screenshots are in the ignored
+  `.agentpm/console-smoke/` directory.
+- AGPM-27 exercised the actual Console start/cancel controls: run
+  `6f8be682-28d0-461f-8418-0488dfd3157c` waited for an assignee and was canceled
+  without dispatching an Agent. Temporary human Admin test sessions were revoked;
+  this verifies authenticated UI behavior, not password-based sign-in.
+- Four Agent identities read the completed acceptance run through production MCP.
+  Handoffs are chronological (`lingxi`, then `hekate`); unreported costs are null,
+  not fabricated zeros. Invalid/failed completion keeps actual model and usage.
+- Startup retry reuse, exhausted polling retry, timeout, canceled-run safety and
+  chronological Handoff serialization are covered by Runner regression tests.
 - Backup `20260919T134359Z`: PostgreSQL restored into a temporary database;
   nine projects verified and the temporary database dropped.
 - Post-deployment backup `20260919T140319Z`: checksums and archive checks passed,
   including dereferenced shared Agent registry and service secret files.
 - Gateway SQLite snapshot `~/.mesh/backups/20260919T141646Z`: integrity checks
   passed. Local backup directories are restricted and exclude environment tokens.
+- Pre-update production backup `20260919T145815Z`: checksum/archive checks passed.
+- Running API, Console and proxy source baseline: `6310be34c`; production source
+  directory `/opt/apps/mesh/releases/6310be34c`. Containers report healthy, and
+  `/mesh/health/` has database ok and zero stale attempts.
+
+## Service Repairs
+
+- The broad `/agentpm/*` redirect was intercepting the existing `agentpm`
+  workspace and causing project pages to return 404. Only the legacy health
+  endpoint now redirects; project URLs remain unchanged.
+- The initial loading placeholder rendered differently at build time and in
+  the browser. It now waits for mounting before using the browser theme.
+  Router runtime/build packages were also aligned to 7.13.1. A cold production
+  page load now completes without React hydration errors.
+- Proxy compression and long-lived caching for fingerprinted static assets
+  reduce repeated transfers over Tailscale. Missing assets return 404, not HTML.
+
+Repeat the privileged UI smoke from the repository with an installed Playwright
+module (or set `PLAYWRIGHT_MODULE` to its module path):
+
+```sh
+node scripts/verify_mesh_console.mjs \
+  --project 529232be-8e6f-4c57-9b66-d56438050a92 \
+  --issue 38a2ecce-b6b0-44c8-9ec7-c60ab0243e11
+```
+
+Use `--controls-issue <dedicated-smoke-issue-id>` only when intentionally testing
+start/cancel actions. The script requires administrator SSH access and creates
+a ten-minute session for an existing human project Admin, revoked in `finally`.
 
 ## Release Gates Still Open
 
 Do not create mesh-v0.2.0 or freeze the contracts yet.
 
-- Authenticated Console smoke for runtime actions, profiles, and Evidence detail;
-  only the sign-in screen has been browser-verified in this continuation.
-- Complete startup retry, Gateway outage, timeout, and restart-in-flight drills.
-- Preserve actual model/usage for invalid completion attempts (current rollback
-  leaves runtime-reported); distinguish unavailable costs from measured zero.
+- Live Console Stage assignment and profile write/rotation smoke; read-only
+  profiles, start/cancel and Evidence inspection are verified.
+- Live Gateway outage, timeout and restart-in-flight drills. Retry/timeout
+  regression tests pass, but are not a substitute for production failure drills.
 - Runner currently speaks tested A2A 1.0 JSON-RPC over HTTP; adopting the official
   client SDK remains open. Gateway already uses the official SDK.
 - Full application-level backup recovery verification, beyond database/archive
