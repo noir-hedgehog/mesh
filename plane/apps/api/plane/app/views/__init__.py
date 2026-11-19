@@ -77,6 +77,7 @@ from .workspace.recent_visit import UserRecentVisitViewSet
 from .workspace.user_preference import WorkspaceUserPreferenceViewSet
 
 from .workspace.member import (
+    AgentInviteSubmissionEndpoint,
     AgentRegistrationRequestEndpoint,
     WorkSpaceMemberViewSet,
     WorkspaceAgentApplicationEndpoint,

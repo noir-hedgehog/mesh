@@ -12,6 +12,7 @@ import { Button } from "@plane/propel/button";
 import { TOAST_TYPE, setToast } from "@plane/propel/toast";
 import { renderFormattedDate } from "@plane/utils";
 import { MemberHeaderColumn } from "@/components/project/member-header-column";
+import { MemberEmail } from "@/components/common/member-email";
 import type { RowData } from "@/components/workspace/settings/member-columns";
 import { AccountTypeColumn, NameColumn } from "@/components/workspace/settings/member-columns";
 import { useMember } from "@/hooks/store/use-member";
@@ -90,7 +91,11 @@ export const useMemberColumns = () => {
       key: "Email address",
       content: t("workspace_settings.settings.members.details.email_address"),
       tdRender: (rowData: RowData) => (
-        <div className={`w-48 truncate ${isSuspended(rowData) ? "text-placeholder" : ""}`}>{rowData.member.email}</div>
+        <MemberEmail
+          email={rowData.member.email}
+          isAgent={rowData.member.is_bot ?? false}
+          className={isSuspended(rowData) ? "text-placeholder" : undefined}
+        />
       ),
       thRender: () => (
         <MemberHeaderColumn

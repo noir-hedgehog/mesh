@@ -31,6 +31,13 @@ import type {
 // services
 import { APIService } from "@/services/api.service";
 
+export type TAgentInvitation = {
+  submit_url: string;
+  invite_token: string;
+  project_name: string | null;
+  expires_in: number;
+};
+
 export class WorkspaceService extends APIService {
   constructor() {
     super(API_BASE_URL);
@@ -222,8 +229,16 @@ export class WorkspaceService extends APIService {
       });
   }
 
-  async listAgentApplications(workspaceSlug: string, status = "pending"): Promise<any[]> {
-    return this.get(`/api/workspaces/${workspaceSlug}/agent-applications/`, { params: { status } })
+  async createAgentInvitation(workspaceSlug: string, projectId?: string): Promise<TAgentInvitation> {
+    return this.post(`/api/workspaces/${workspaceSlug}/agent-applications/`, { project_id: projectId })
+      .then((response) => response?.data)
+      .catch((error) => {
+        throw error?.response?.data;
+      });
+  }
+
+  async listAgentApplications(workspaceSlug: string, status = "pending", projectId?: string): Promise<any[]> {
+    return this.get(`/api/workspaces/${workspaceSlug}/agent-applications/`, { params: { status, project_id: projectId } })
       .then((response) => response?.data)
       .catch((error) => {
         throw error?.response?.data;

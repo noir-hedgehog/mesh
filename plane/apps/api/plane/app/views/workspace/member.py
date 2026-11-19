@@ -3,15 +3,17 @@
 # See the LICENSE file for details.
 
 # Django imports
-from django.db import transaction
+from django.core import signing
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Q, OuterRef, Subquery, IntegerField
 from django.utils import timezone
 from django.db.models.functions import Coalesce
+from django.urls import reverse
 
 # Third party modules
 from uuid import uuid4
 
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
@@ -35,12 +37,13 @@ from plane.db.models import (
     DraftIssue,
     Project,
     ProjectMember,
+    ProjectUserProperty,
     User,
     Workspace,
     WorkspaceMember,
 )
 from plane.utils.cache import invalidate_cache
-from plane.mesh.agent_cards import sync_agent_card
+from plane.mesh.agent_cards import sync_agent_card, validate_agent_endpoint
 
 from .. import BaseViewSet
 
@@ -309,6 +312,10 @@ def _agent_role(value, default=15):
     return roles[value]
 
 
+def _generated_agent_email(agent_id):
+    return f"agent-{agent_id}@agentpm.local"
+
+
 def _serialize_agent_application(application):
     return {
         "id": str(application.id),
@@ -319,6 +326,7 @@ def _serialize_agent_application(application):
         "reason": application.reason,
         "agent_type": application.agent_type,
         "runtime_provider": application.runtime_provider,
+        "default_model": application.default_model,
         "endpoint_url": application.endpoint_url,
         "agent_card": application.agent_card,
         "capability_claims": application.capability_claims,
@@ -326,6 +334,11 @@ def _serialize_agent_application(application):
         "status": application.status,
         "source": application.source,
         "project_id": str(application.project_id) if application.project_id else None,
+        "project_name": (
+            application.project.name
+            if application.project_id and application.project.workspace_id == application.workspace_id
+            else None
+        ),
         "review_note": application.review_note,
         "reviewed_by": str(application.reviewed_by_id) if application.reviewed_by_id else None,
         "created_at": application.created_at,
@@ -333,57 +346,63 @@ def _serialize_agent_application(application):
     }
 
 
+class AgentAccountConflict(ValueError):
+    pass
+
+
 def _create_agent_account(*, workspace, actor, payload):
     agent_id = _agent_id(payload.get("agent_id"))
     display_name = str(payload.get("display_name") or agent_id).strip()
-    email = str(payload.get("email") or f"agent-{agent_id}@agentpm.local").strip().lower()
-    workspace_role = _agent_role(payload.get("workspace_role") or payload.get("requested_role"), 15)
-    project_role = _agent_role(payload.get("project_role") or payload.get("requested_role"), 15)
+    email = str(payload.get("email") or _generated_agent_email(agent_id)).strip().lower()
     project_id = payload.get("project_id")
+    username = f"agent-{agent_id}"
 
     with transaction.atomic():
-        user, _ = User.objects.get_or_create(
+        project = Project.objects.get(workspace=workspace, id=project_id) if project_id else None
+        if (
+            AgentProfile.objects.filter(workspace=workspace, agent_id=agent_id, deleted_at__isnull=True).exists()
+            or User.objects.filter(username=username).exists()
+        ):
+            raise AgentAccountConflict("This Agent ID is already in use.")
+        user, created = User.objects.get_or_create(
             email=email,
-            defaults={"username": f"agent-{agent_id}", "display_name": display_name},
+            defaults={
+                "username": username,
+                "display_name": display_name,
+                "first_name": display_name,
+                "last_name": "Agent",
+                "is_active": True,
+                "is_email_verified": True,
+                "is_email_valid": True,
+                "is_bot": True,
+                "bot_type": "WORKSPACE_SEED",
+            },
         )
-        if not user.is_bot and WorkspaceMember.objects.filter(member=user).exists():
-            raise ValueError("email already belongs to a human Plane user")
-        user.username = f"agent-{agent_id}"
-        user.display_name = display_name
-        user.first_name = display_name
-        user.last_name = "Agent"
-        user.is_active = True
-        user.is_email_verified = True
-        user.is_email_valid = True
-        user.is_bot = True
-        user.bot_type = "WORKSPACE_SEED"
+        if not created:
+            raise AgentAccountConflict("This email already belongs to a Plane account.")
         user.set_unusable_password()
-        user.save()
+        user.save(update_fields=["password"])
 
-        workspace_member, _ = WorkspaceMember.objects.get_or_create(
+        workspace_member = WorkspaceMember.objects.create(
             workspace=workspace,
             member=user,
-            defaults={"role": workspace_role, "is_active": True},
+            role=ROLE.MEMBER.value,
+            is_active=True,
         )
-        workspace_member.role = workspace_role
-        workspace_member.is_active = True
-        workspace_member.save()
 
-        agent_profile, _ = AgentProfile.objects.update_or_create(
+        agent_profile = AgentProfile.objects.create(
             workspace=workspace,
             agent_id=agent_id,
-            defaults={
-                "user": user,
-                "owner": actor,
-                "agent_type": str(payload.get("agent_type") or "autonomous"),
-                "runtime_provider": str(payload.get("runtime_provider") or "custom"),
-                "endpoint_url": str(payload.get("endpoint_url") or ""),
-                "status": AgentProfile.Status.ACTIVE,
-                "trust_level": str(payload.get("trust_level") or AgentProfile.TrustLevel.VERIFIED),
-                "agent_card": dict(payload.get("agent_card") or {}),
-                "capability_claims": list(payload.get("capability_claims") or []),
-                "boundaries": dict(payload.get("boundaries") or {}),
-            },
+            user=user,
+            owner=actor,
+            agent_type=str(payload.get("agent_type") or "autonomous"),
+            runtime_provider=str(payload.get("runtime_provider") or "custom"),
+            endpoint_url=str(payload.get("endpoint_url") or ""),
+            status=AgentProfile.Status.ACTIVE,
+            trust_level=str(payload.get("trust_level") or AgentProfile.TrustLevel.VERIFIED),
+            agent_card=dict(payload.get("agent_card") or {}),
+            capability_claims=list(payload.get("capability_claims") or []),
+            boundaries=dict(payload.get("boundaries") or {}),
         )
         default_model = str(payload.get("default_model") or "").strip()
         default_execution = None
@@ -404,17 +423,20 @@ def _create_agent_account(*, workspace, actor, payload):
                 },
             )
 
-        if project_id:
-            project = Project.objects.get(workspace=workspace, id=project_id)
-            project_member, _ = ProjectMember.objects.get_or_create(
+        if project is not None:
+            ProjectMember.objects.create(
                 workspace=workspace,
                 project=project,
                 member=user,
-                defaults={"role": project_role, "is_active": True},
+                role=ROLE.MEMBER.value,
+                is_active=True,
             )
-            project_member.role = project_role
-            project_member.is_active = True
-            project_member.save()
+            ProjectUserProperty.objects.get_or_create(
+                workspace=workspace,
+                project=project,
+                user=user,
+                defaults={"sort_order": 65535},
+            )
 
         token = None
         if payload.get("create_token", True):
@@ -511,6 +533,80 @@ def _serialize_workspace_agent(member):
     }
 
 
+AGENT_INVITE_SALT = "mesh.agent-application"
+AGENT_INVITE_TTL = 24 * 60 * 60
+
+
+class AgentInviteSubmissionSerializer(serializers.Serializer):
+    invite_token = serializers.CharField(max_length=2048, write_only=True)
+    agent_id = serializers.CharField(max_length=63)
+    display_name = serializers.CharField(max_length=255)
+    agent_type = serializers.ChoiceField(choices=("autonomous", "assistant", "remote", "service"), default="autonomous")
+    runtime_provider = serializers.CharField(max_length=64, default="custom")
+    default_model = serializers.CharField(max_length=255, allow_blank=True, default="")
+    endpoint_url = serializers.URLField(max_length=1024, allow_blank=True, default="")
+    capability_claims = serializers.ListField(child=serializers.CharField(max_length=128), max_length=50, default=list)
+    denied_capabilities = serializers.ListField(child=serializers.CharField(max_length=128), max_length=50, default=list)
+    reason = serializers.CharField(max_length=2000, allow_blank=True, default="")
+
+    def validate_agent_id(self, value):
+        try:
+            return _agent_id(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_endpoint_url(self, value):
+        if value:
+            try:
+                validate_agent_endpoint(value)
+            except ValueError as exc:
+                raise serializers.ValidationError(str(exc)) from exc
+        return value
+
+
+class AgentInviteSubmissionEndpoint(BaseAPIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request, slug):
+        serializer = AgentInviteSubmissionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = dict(serializer.validated_data)
+        try:
+            invitation = signing.loads(payload.pop("invite_token"), salt=AGENT_INVITE_SALT, max_age=AGENT_INVITE_TTL)
+        except signing.BadSignature:
+            return Response({"error": "Invalid or expired Agent invitation."}, status=status.HTTP_403_FORBIDDEN)
+
+        workspace = Workspace.objects.get(slug=slug)
+        if str(workspace.id) != invitation["workspace_id"]:
+            return Response({"error": "This invitation belongs to another workspace."}, status=status.HTTP_403_FORBIDDEN)
+        project_id = invitation["project_id"]
+        if project_id and not Project.objects.filter(workspace=workspace, pk=project_id).exists():
+            return Response({"error": "The invitation project no longer exists."}, status=status.HTTP_404_NOT_FOUND)
+
+        agent_id = payload["agent_id"]
+        invite_id = invitation["invite_id"]
+        payload["boundaries"] = {"denied_capabilities": payload.pop("denied_capabilities")}
+        payload["email"] = _generated_agent_email(agent_id)
+        try:
+            application, created = AgentRegistrationApplication.objects.get_or_create(
+                invite_id=invite_id,
+                defaults={**payload, "workspace": workspace, "project_id": project_id, "source": "invitation"},
+            )
+        except IntegrityError:
+            if not AgentRegistrationApplication.objects.filter(
+                workspace=workspace, agent_id=agent_id, status=AgentRegistrationApplication.Status.PENDING
+            ).exists():
+                raise
+            return Response({"error": "This Agent ID already has a pending application."}, status=status.HTTP_409_CONFLICT)
+        if application.agent_id != agent_id:
+            return Response({"error": "This invitation has already been used."}, status=status.HTTP_409_CONFLICT)
+        return Response(
+            {"id": str(application.id), "status": application.status},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
 class AgentRegistrationRequestEndpoint(BaseAPIView):
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -519,8 +615,8 @@ class AgentRegistrationRequestEndpoint(BaseAPIView):
         try:
             workspace = Workspace.objects.get(slug=slug)
             agent_id = _agent_id(request.data.get("agent_id"))
-            requested_role = str(request.data.get("requested_role") or "member").lower()
-            _agent_role(requested_role)
+            project_id = request.data.get("project_id") or None
+            project = Project.objects.get(workspace=workspace, pk=project_id) if project_id else None
             existing = AgentRegistrationApplication.objects.filter(
                 workspace=workspace,
                 agent_id=agent_id,
@@ -530,11 +626,11 @@ class AgentRegistrationRequestEndpoint(BaseAPIView):
                 return Response(_serialize_agent_application(existing), status=status.HTTP_200_OK)
             application = AgentRegistrationApplication.objects.create(
                 workspace=workspace,
-                project_id=request.data.get("project_id") or None,
+                project=project,
                 agent_id=agent_id,
                 display_name=str(request.data.get("display_name") or agent_id).strip(),
-                email=str(request.data.get("email") or f"agent-{agent_id}@agentpm.local").strip().lower(),
-                requested_role=requested_role,
+                email=str(request.data.get("email") or _generated_agent_email(agent_id)).strip().lower(),
+                requested_role="member",
                 reason=str(request.data.get("reason") or "").strip(),
                 agent_type=str(request.data.get("agent_type") or "autonomous").strip(),
                 runtime_provider=str(request.data.get("runtime_provider") or "custom").strip(),
@@ -569,6 +665,8 @@ class WorkspaceAgentEndpoint(BaseAPIView):
                 _create_agent_account(workspace=workspace, actor=request.user, payload=request.data),
                 status=status.HTTP_201_CREATED,
             )
+        except AgentAccountConflict as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_409_CONFLICT)
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -647,16 +745,43 @@ class WorkspaceAgentDetailEndpoint(BaseAPIView):
 class WorkspaceAgentApplicationEndpoint(BaseAPIView):
     @allow_permission(allowed_roles=[ROLE.ADMIN], level="WORKSPACE")
     def get(self, request, slug, pk=None):
-        queryset = AgentRegistrationApplication.objects.filter(workspace__slug=slug)
+        queryset = AgentRegistrationApplication.objects.filter(workspace__slug=slug).select_related("project")
         if request.query_params.get("status"):
             queryset = queryset.filter(status=request.query_params["status"])
+        if request.query_params.get("project_id"):
+            queryset = queryset.filter(project_id=request.query_params["project_id"])
         if pk:
             return Response(_serialize_agent_application(queryset.get(pk=pk)))
         return Response([_serialize_agent_application(item) for item in queryset[:100]])
 
     @allow_permission(allowed_roles=[ROLE.ADMIN], level="WORKSPACE")
+    def post(self, request, slug):
+        workspace = Workspace.objects.get(slug=slug)
+        project_id = request.data.get("project_id")
+        project = Project.objects.get(workspace=workspace, pk=project_id) if project_id else None
+        invite_token = signing.dumps(
+            {
+                "invite_id": str(uuid4()),
+                "workspace_id": str(workspace.id),
+                "project_id": str(project.id) if project else None,
+            },
+            salt=AGENT_INVITE_SALT,
+        )
+        return Response(
+            {
+                "submit_url": request.build_absolute_uri(reverse("agent-invite-submit", kwargs={"slug": slug})),
+                "invite_token": invite_token,
+                "project_name": project.name if project else None,
+                "expires_in": AGENT_INVITE_TTL,
+            },
+            status=status.HTTP_201_CREATED,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @allow_permission(allowed_roles=[ROLE.ADMIN], level="WORKSPACE")
+    @transaction.atomic
     def patch(self, request, slug, pk):
-        application = AgentRegistrationApplication.objects.get(workspace__slug=slug, pk=pk)
+        application = AgentRegistrationApplication.objects.select_for_update().get(workspace__slug=slug, pk=pk)
         if application.status != AgentRegistrationApplication.Status.PENDING:
             return Response({"error": "application has already been reviewed"}, status=status.HTTP_409_CONFLICT)
         action = str(request.data.get("action") or "").lower()
@@ -677,17 +802,18 @@ class WorkspaceAgentApplicationEndpoint(BaseAPIView):
                     "agent_id": application.agent_id,
                     "display_name": application.display_name,
                     "email": application.email,
-                    "requested_role": request.data.get("role") or application.requested_role,
-                    "project_id": request.data.get("project_id") or application.project_id,
-                    "project_role": request.data.get("role") or application.requested_role,
+                    "project_id": application.project_id,
                     "agent_type": application.agent_type,
                     "runtime_provider": application.runtime_provider,
+                    "default_model": application.default_model,
                     "endpoint_url": application.endpoint_url,
                     "agent_card": application.agent_card,
                     "capability_claims": application.capability_claims,
                     "boundaries": application.boundaries,
                 },
             )
+        except AgentAccountConflict as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_409_CONFLICT)
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         application.status = AgentRegistrationApplication.Status.APPROVED

@@ -13,6 +13,7 @@ import { Button } from "@plane/propel/button";
 import { SearchIcon } from "@plane/propel/icons";
 // components
 import { MembersSettingsLoader } from "@/components/ui/loader/settings/members";
+import { AgentManagementModal } from "@/components/workspace/settings/agent-management-modal";
 // hooks
 import { useMember } from "@/hooks/store/use-member";
 import { useUserPermissions } from "@/hooks/store/user";
@@ -31,10 +32,12 @@ export const ProjectMemberList = observer(function ProjectMemberList(props: TPro
   const { projectId, workspaceSlug } = props;
   // states
   const [addAgentModal, setAddAgentModal] = useState(false);
+  const [createAgentModal, setCreateAgentModal] = useState(false);
   const [inviteModal, setInviteModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const {
     project: { projectMemberIds, fetchProjectMembers, getFilteredProjectMemberDetails, filters },
+    workspace: { fetchWorkspaceMembers },
   } = useMember();
   const { allowPermissions } = useUserPermissions();
 
@@ -56,6 +59,7 @@ export const ProjectMemberList = observer(function ProjectMemberList(props: TPro
   );
 
   const isAdmin = allowPermissions([EUserPermissions.ADMIN], EUserPermissionsLevel.PROJECT);
+  const canCreateAgent = allowPermissions([EUserPermissions.ADMIN], EUserPermissionsLevel.WORKSPACE, workspaceSlug);
 
   // Handler for role filter updates
   const handleRoleFilterUpdate = (role: string) => {
@@ -90,9 +94,20 @@ export const ProjectMemberList = observer(function ProjectMemberList(props: TPro
         projectId={projectId}
         workspaceSlug={workspaceSlug}
       />
-      <div className="flex items-center justify-between gap-4 overflow-x-hidden border-b border-subtle py-2">
+      {createAgentModal && canCreateAgent && (
+        <AgentManagementModal
+          isOpen={createAgentModal}
+          onClose={() => setCreateAgentModal(false)}
+          onAgentCreated={() =>
+            Promise.all([fetchProjectMembers(workspaceSlug, projectId, true), fetchWorkspaceMembers(workspaceSlug)])
+          }
+          projectId={projectId}
+          workspaceSlug={workspaceSlug}
+        />
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-subtle py-2">
         <div className="text-14 font-semibold">{t("common.members")}</div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center justify-start gap-1.5 rounded-md border border-subtle bg-surface-1 px-2 py-1">
             <SearchIcon className="h-3.5 w-3.5" />
             <input
@@ -108,6 +123,11 @@ export const ProjectMemberList = observer(function ProjectMemberList(props: TPro
             handleUpdate={handleRoleFilterUpdate}
             memberType="project"
           />
+          {canCreateAgent && (
+            <Button variant="secondary" onClick={() => setCreateAgentModal(true)}>
+              Create Agent
+            </Button>
+          )}
           {isAdmin && (
             <>
               <Button variant="secondary" onClick={() => setAddAgentModal(true)}>

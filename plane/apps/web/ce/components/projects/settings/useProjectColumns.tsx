@@ -10,6 +10,7 @@ import { EUserPermissions, EUserPermissionsLevel } from "@plane/constants";
 import type { IUserLite, TProjectMembership } from "@plane/types";
 import { renderFormattedDate } from "@plane/utils";
 // components
+import { MemberEmail } from "@/components/common/member-email";
 import { MemberHeaderColumn } from "@/components/project/member-header-column";
 import {
   AccountTypeColumn,
@@ -122,7 +123,11 @@ export const useProjectColumns = (props: TUseProjectColumnsProps) => {
         />
       ),
       tdRender: (rowData: RowData) => (
-        <div className="w-48 text-secondary">{rowData.member.email}</div>
+        <MemberEmail
+          email={rowData.member.email}
+          isAgent={rowData.is_agent ?? rowData.member.is_bot ?? false}
+          className="text-secondary"
+        />
       ),
     },
     {

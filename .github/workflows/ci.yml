@@ -29,7 +29,11 @@ jobs:
       - run: cp plane/.env.example plane/.env && cp plane/apps/api/.env.example plane/apps/api/.env
       - run: docker compose -f plane/docker-compose.yml build api
       - run: docker compose -f plane/docker-compose.yml up -d plane-db plane-redis plane-mq
-      - run: docker compose -f plane/docker-compose.yml run --rm api sh -lc "pip install -r requirements/test.txt && python manage.py check && python manage.py migrate --noinput && pytest plane/tests/unit/mesh plane/tests/contract/api/test_mcp.py -q"
+      - run: >-
+          docker compose -f plane/docker-compose.yml run --rm api sh -lc "pip install -r requirements/test.txt
+          && python manage.py check && python manage.py migrate --noinput
+          && pytest plane/tests/unit/mesh plane/tests/contract/api/test_mcp.py
+          plane/tests/contract/api/test_agent_onboarding.py -q"
 
   console-web:
     runs-on: ubuntu-latest

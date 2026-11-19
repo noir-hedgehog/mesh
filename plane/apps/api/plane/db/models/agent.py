@@ -21,12 +21,14 @@ class AgentRegistrationApplication(WorkspaceBaseModel):
     reason = models.TextField(blank=True)
     agent_type = models.CharField(max_length=64, default="autonomous")
     runtime_provider = models.CharField(max_length=64, default="custom")
+    default_model = models.CharField(max_length=255, blank=True)
     endpoint_url = models.URLField(max_length=1024, blank=True)
     agent_card = models.JSONField(default=dict, blank=True)
     capability_claims = models.JSONField(default=list, blank=True)
     boundaries = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     source = models.CharField(max_length=32, default="bootstrap")
+    invite_id = models.UUIDField(null=True, unique=True)
     reviewed_by = models.ForeignKey(
         "db.User",
         on_delete=models.SET_NULL,

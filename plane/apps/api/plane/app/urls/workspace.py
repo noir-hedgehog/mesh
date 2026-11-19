@@ -10,6 +10,7 @@ from plane.app.views import (
     WorkSpaceViewSet,
     WorkspaceJoinEndpoint,
     WorkspaceMemberAPITokenEndpoint,
+    AgentInviteSubmissionEndpoint,
     AgentRegistrationRequestEndpoint,
     WorkspaceAgentApplicationEndpoint,
     WorkspaceAgentDetailEndpoint,
@@ -118,6 +119,11 @@ urlpatterns = [
     path("workspaces/<str:slug>/agents/", WorkspaceAgentEndpoint.as_view(), name="workspace-agents"),
     path("workspaces/<str:slug>/agents/<uuid:member_id>/", WorkspaceAgentDetailEndpoint.as_view(), name="workspace-agent-details"),
     path("workspaces/<str:slug>/agent-applications/", WorkspaceAgentApplicationEndpoint.as_view(), name="workspace-agent-applications"),
+    path(
+        "workspaces/<str:slug>/agent-applications/submit/",
+        AgentInviteSubmissionEndpoint.as_view(),
+        name="agent-invite-submit",
+    ),
     path("workspaces/<str:slug>/agent-applications/<uuid:pk>/", WorkspaceAgentApplicationEndpoint.as_view(), name="workspace-agent-application-details"),
     path(
         "workspaces/<str:slug>/members/leave/",
