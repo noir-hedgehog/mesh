@@ -47,6 +47,25 @@ Current remote deployment:
 http://100.79.187.62:8080/api/v1/workspaces/agentpm/mcp/
 ```
 
+Before registering an existing Agent with a client, check its production token and MCP identity:
+
+```bash
+MESH_MCP_AGENT_ID=iris ./scripts/mesh_production_mcp_stdio.sh --check
+```
+
+To check the endpoint and credentials that the OpenClaw registration command will use:
+
+```bash
+MESH_MCP_AGENT_ID=iris \
+  MESH_PLANE_AGENT_ENV_FILE=.agentpm/plane-agent-env.production.sh \
+  ./scripts/register_plane_native_mcp_openclaw.sh --check \
+  http://100.79.187.62:8080/api/v1/workspaces/agentpm/mcp/
+```
+
+The check reads MCP tool discovery and the token's Agent identity. It returns a JSON status on success
+and exits nonzero with a diagnostic on failure. It does not print the token, seed Plane, register OpenClaw,
+or verify project membership and A2A execution.
+
 Register a Plane-native MCP server for one agent identity:
 
 ```bash

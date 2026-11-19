@@ -6,10 +6,12 @@ cd "$ROOT_DIR"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/register_plane_native_mcp_openclaw.sh [--dry-run] [mcp-url]
+Usage: scripts/register_plane_native_mcp_openclaw.sh [--dry-run|--check] [mcp-url]
 
 Registers Plane's built-in MCP endpoint through a local secret-loading stdio proxy.
 The OpenClaw config stores the agent id and URL, but never the Plane API token.
+Use --check to verify an existing Agent token and endpoint without changing
+OpenClaw configuration or seeding Plane.
 For a remote deployment, set MESH_PLANE_AGENT_ENV_FILE to a dedicated ignored
 file such as .agentpm/plane-agent-env.remote.sh and MESH_SKIP_PLANE_SEED=1.
 Matching AGENTPM_* names remain compatibility fallbacks for one release.
@@ -17,12 +19,16 @@ EOF
 }
 
 DRY_RUN=0
-if [ "${1:-}" = "--dry-run" ]; then DRY_RUN=1; shift; fi
+CHECK=0
+case "${1:-}" in
+  --dry-run) DRY_RUN=1; shift ;;
+  --check) CHECK=1; shift ;;
+esac
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then usage; exit 0; fi
 
 command -v python3 >/dev/null 2>&1 || { echo "python3 CLI not found" >&2; exit 1; }
 OPENCLAW_BIN="${MESH_OPENCLAW_BIN:-openclaw}"
-if [ "$DRY_RUN" -eq 0 ]; then
+if [ "$DRY_RUN" -eq 0 ] && [ "$CHECK" -eq 0 ]; then
   command -v "$OPENCLAW_BIN" >/dev/null 2>&1 || { echo "openclaw CLI not found" >&2; exit 1; }
   if [ "${MESH_SKIP_PLANE_SEED:-${AGENTPM_SKIP_PLANE_SEED:-0}}" != "1" ]; then
     eval "$(./scripts/seed_plane_mvp.sh | /usr/bin/grep '^export ')"
@@ -36,6 +42,11 @@ SERVER_NAME="plane-native-$AGENT_ID"
 PLANE_API_BASE_URL="${PLANE_API_BASE_URL:-http://127.0.0.1:8000}"
 PLANE_WORKSPACE_SLUG="${PLANE_WORKSPACE_SLUG:-agentpm}"
 MCP_URL="${PLANE_NATIVE_MCP_URL:-${1:-${PLANE_API_BASE_URL%/}/api/v1/workspaces/$PLANE_WORKSPACE_SLUG/mcp/}}"
+
+if [ "$CHECK" -eq 1 ]; then
+  exec python3 "$ROOT_DIR/scripts/plane_native_mcp_proxy.py" \
+    --check --agent-id "$AGENT_ID" --url "$MCP_URL" --env-file "$ENV_FILE"
+fi
 
 ARGS=(
   --command python3
